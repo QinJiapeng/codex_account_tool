@@ -51,6 +51,23 @@ function Test-ProjectService($processInfo) {
     return $commandLine -match '(?i)uvicorn(?:\.exe)?\s+app\.main:app'
 }
 
+function Stop-ProjectService($processInfo) {
+    if (-not $processInfo) {
+        return
+    }
+    $servicePid = [int]$processInfo.ProcessId
+    Write-Host ("检测到已有服务（PID {0}），正在停止旧服务并重新启动。" -f $servicePid)
+    Stop-Process -Id $servicePid -Force -ErrorAction Stop
+    $deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+        if (-not (Get-ListeningProcess)) {
+            return
+        }
+    }
+    throw ("旧服务（PID {0}）未能在 10 秒内退出，未启动新服务。" -f $servicePid)
+}
+
 # A named mutex prevents two nearly simultaneous launches from both passing
 # the port check before either newly started process begins listening.
 $mutex = New-Object System.Threading.Mutex($false, "Local\CodexAccountToolStartup")
@@ -65,12 +82,10 @@ try {
     $existing = Get-ListeningProcess
     if ($existing) {
         if (Test-ProjectService $existing) {
-            Set-Content -LiteralPath $pidFile -Value ([string]$existing.ProcessId) -Encoding ascii
-            Write-Host "服务已在运行，本次不重复启动。"
-            Write-Host ("地址：http://{0}:{1}    PID：{2}" -f $hostName, $portNumber, $existing.ProcessId)
-            exit 0
+            Stop-ProjectService $existing
+        } else {
+            throw ("端口 {0} 已被其他进程占用（PID {1}），未启动新服务。" -f $portNumber, $existing.ProcessId)
         }
-        throw ("端口 {0} 已被其他进程占用（PID {1}），未启动新服务。" -f $portNumber, $existing.ProcessId)
     }
 
     # The working directory is already the project root, so avoid passing the
@@ -108,7 +123,7 @@ try {
     Set-Content -LiteralPath $pidFile -Value ([string]$listener.ProcessId) -Encoding ascii
     Write-Host "服务启动成功。"
     Write-Host ("地址：http://{0}:{1}    PID：{2}" -f $hostName, $portNumber, $listener.ProcessId)
-    Write-Host "可重复运行此脚本；服务已运行时不会重复启动。"
+    Write-Host "可重复运行此脚本；再次运行会先停止旧服务，再启动新服务。"
 }
 finally {
     if ($hasMutex) {

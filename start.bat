@@ -9,7 +9,7 @@ if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 set "exitCode=%ERRORLEVEL%"
 echo.
 if not "%exitCode%"=="0" echo START FAILED. Exit code: %exitCode%
-if "%exitCode%"=="0" echo SERVICE STARTED OR ALREADY RUNNING.
+if "%exitCode%"=="0" echo SERVICE STARTED OR RESTARTED.
 echo.
 pause
 endlocal & exit /b %exitCode%
