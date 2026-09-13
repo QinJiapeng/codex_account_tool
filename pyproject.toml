@@ -1,0 +1,10 @@
+[project]
+name = "codex-account-tool"
+version = "0.1.0"
+description = "用于已有账号重新授权、邮箱 OTP 和 Codex 额度查询的本地工具"
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

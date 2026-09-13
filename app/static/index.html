@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Codex 账号工具 · 授权与额度</title>
+  <meta name="theme-color" content="#315efb">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=2">
+  <link rel="stylesheet" href="/static/styles.css?v=12">
+</head>
+<body>
+  <main class="shell">
+    <header><div><h1>Codex 账号授权与额度</h1><p>仅处理已有账号：重新授权、邮箱验证码和额度查询</p></div><span id="health" class="pill">连接中…</span></header>
+    <nav class="tabs" role="tablist" aria-label="主导航">
+      <button id="consoleTab" class="tab is-active" role="tab" type="button" data-tab="console" aria-controls="consolePanel" aria-selected="true"><span class="tab-mark">⌘</span>授权工作台</button>
+      <button id="proxyTab" class="tab" role="tab" type="button" data-tab="proxy" aria-controls="proxyPanel" aria-selected="false"><span class="tab-mark">⌁</span>代理池</button>
+      <button id="settingsTab" class="tab" role="tab" type="button" data-tab="settings" aria-controls="settingsPanel" aria-selected="false"><span class="tab-mark">⚙</span>设置</button>
+    </nav>
+
+    <div id="consolePanel" class="tab-panel" role="tabpanel" aria-labelledby="consoleTab" data-panel="console">
+      <section class="quota-overview" aria-label="额度统计">
+        <div class="quota-stat"><span>账号总数</span><strong id="statAccountTotal">0</strong></div>
+        <div class="quota-stat"><span>已授权</span><strong id="statAuthorized">0</strong></div>
+        <div class="quota-stat"><span>待查询 / 失败</span><strong><span id="statPending">0</span> / <span id="statFailed">0</span></strong></div>
+        <div class="quota-stat"><span>总 Credit</span><strong id="statTotalCredit">0</strong></div>
+        <div class="quota-stat"><span>合计约</span><strong id="statEstimatedValue">$0.00</strong><small>按 $0.04 / Credit</small></div>
+        <div class="quota-stat"><span>Free / Plus</span><strong><span id="statFree">0</span> / <span id="statPlus">0</span></strong><small>套餐账号数</small></div>
+      </section>
+      <section id="quotaTiers" class="quota-tiers" aria-label="额度分档"></section>
+      <section class="card scheduler-workbench-card" aria-label="定时验活执行情况">
+        <div class="toolbar"><div><h2>定时验活</h2><p class="hint">在授权工作台查看定时验活是否启用、下次执行时间和最近一次执行结果。</p></div><span id="workbenchSchedulerState" class="soft-pill">读取中</span></div>
+        <p id="workbenchSchedulerMeta" class="scheduler-workbench-meta">正在读取定时任务状态。</p>
+        <div id="workbenchSchedulerStats" class="scheduler-workbench-stats" aria-live="polite"></div>
+        <p id="workbenchSchedulerError" class="scheduler-workbench-error" hidden></p>
+      </section>
+      <section class="card account-list-card">
+        <div class="account-list-header"><div><p class="eyebrow">ACCOUNT WORKBENCH</p><h2>账号列表</h2><p class="hint">未勾选时操作全部账号，勾选后仅操作选中账号。</p></div><div class="account-list-badges"><span id="reauthConnectionMode" class="soft-pill connection-mode-pill">授权模式读取中</span><span id="selectionCount" class="soft-pill">未选择账号</span></div></div>
+        <div class="account-list-toolbar">
+          <div class="account-search-group"><label class="account-search-label" for="accountSearch">账号搜索</label><div class="account-search-control"><input id="accountSearch" type="search" placeholder="输入邮箱或套餐关键词" autocomplete="off" spellcheck="false"><span id="accountSearchMeta" class="account-search-meta" aria-live="polite"></span></div></div>
+          <div class="account-action-group"><span class="account-action-label">账号操作</span><div class="account-primary-actions"><button id="openImportAccounts" class="secondary-button" type="button">导入账号</button><button id="reauthSelected" class="secondary-button" type="button">重新授权全部</button><button id="quotaSelected" class="secondary-button" type="button">查询全部额度</button><button id="deleteSelected" class="danger-button" type="button" disabled>删除选中</button></div></div>
+          <div class="account-action-group account-transfer-group"><span class="account-action-label">导出与上传</span><div class="account-transfer-actions"><select id="exportFormat" aria-label="授权结果导出格式" title="授权结果导出格式"><option value="four-segment">邮箱四段 TXT</option><option value="cpa" selected>CPA ZIP</option><option value="sub2api">Sub2API ZIP</option></select><button id="exportAccounts" class="secondary-button" type="button">导出授权结果</button><button id="uploadCpa" class="secondary-button" type="button">上传 CPA</button><button id="uploadSub2Api" class="secondary-button" type="button">上传 Sub2API</button></div></div>
+        </div>
+        <div class="account-list-results"><span id="importResult" class="result"></span><span id="actionResult" class="result"></span><span id="exportResult" class="result"></span></div>
+        <div class="table-wrap account-table-wrap"><table class="account-table"><thead><tr><th class="select-column"><input id="selectAllAccounts" type="checkbox" aria-label="选择当前页账号" title="选择当前页账号"></th><th>邮箱 / 套餐</th><th>授权状态</th><th>Token</th><th>上传状态</th><th>额度</th><th>限额（剩余）</th></tr></thead><tbody id="rows"><tr><td colspan="7"><div class="account-empty">暂无账号，请先点击“导入账号”</div></td></tr></tbody></table></div>
+        <div class="account-pagination" aria-label="账号列表分页"><span id="accountPageSummary" class="account-page-summary">共 0 个账号</span><div class="account-page-controls"><label>每页 <select id="accountPageSize" aria-label="每页账号数"><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option><option value="1000">1000</option><option value="2000">2000</option><option value="5000">5000</option></select> 条</label><button id="accountPagePrev" class="secondary-button" type="button">上一页</button><label class="account-page-input-label">第 <input id="accountPage" type="number" min="1" step="1" value="1" aria-label="账号列表页码"> 页</label><span id="accountPageTotal">/ 1 页</span><button id="accountPageNext" class="secondary-button" type="button">下一页</button></div></div>
+      </section>
+      <section class="card jobs-card"><div class="toolbar"><div><h2>最近任务</h2><p class="hint">查看最近的账号重新授权进度与结果。</p></div><span id="jobStats" class="soft-pill">最近 0 条</span></div><div id="jobs" class="jobs"><div class="job-empty">暂无任务</div></div></section>
+    </div>
+
+    <div id="proxyPanel" class="tab-panel" role="tabpanel" aria-labelledby="proxyTab" data-panel="proxy" hidden>
+      <section class="card proxy-card">
+        <div class="toolbar"><h2>导入代理</h2><span id="proxyStats" class="soft-pill">读取中</span></div>
+        <p class="hint">每行一个地址，也支持逗号、分号分隔。支持 <code>http://</code>、<code>https://</code>、<code>socks4://</code>、<code>socks5://</code>、<code>socks5h://</code>，省略协议时默认使用 HTTP。</p>
+        <p class="hint">可用格式：<code>host:port</code>、<code>username:password@host:port</code>、<code>socks5://username:password@host:port</code></p>
+        <textarea id="proxyText" placeholder="host:port&#10;username:password@host:port&#10;http://username:password@host:port&#10;socks5://username:password@host:port&#10;socks5h://username:password@host:port"></textarea>
+        <div class="proxy-import-actions"><button id="importProxies" type="button">导入代理</button><span id="proxyResult" class="result"></span></div>
+        <div class="proxy-list-heading"><div><h3>代理列表</h3><p class="hint">可用代理优先显示；账号和密码不会出现在列表中。</p></div></div>
+        <div class="table-wrap proxy-table-wrap"><table class="proxy-table"><thead><tr><th>代理地址</th><th>协议</th><th>状态</th><th>成功次数</th><th>失败次数</th></tr></thead><tbody id="proxyRows"><tr><td colspan="5">暂无代理</td></tr></tbody></table></div>
+        <div class="proxy-pagination" aria-label="代理池列表分页"><span id="proxyPageSummary" class="account-page-summary">共 0 个代理</span><div class="account-page-controls"><label>每页 <select id="proxyPageSize" aria-label="每页代理数"><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option><option value="200">200</option><option value="500">500</option><option value="1000">1000</option><option value="2000">2000</option><option value="5000">5000</option></select> 条</label><button id="proxyPagePrev" class="secondary-button" type="button">上一页</button><label>第 <input id="proxyPage" type="number" min="1" step="1" value="1" aria-label="代理池列表页码"> 页</label><span id="proxyPageTotal">/ 1 页</span><button id="proxyPageNext" class="secondary-button" type="button">下一页</button></div></div>
+      </section>
+    </div>
+
+    <div id="settingsPanel" class="tab-panel" role="tabpanel" aria-labelledby="settingsTab" data-panel="settings" hidden>
+      <section class="card settings-card">
+        <div class="toolbar"><h2>设置选项</h2><span id="settingsState" class="soft-pill">读取中</span></div>
+        <div class="settings-grid">
+          <label class="setting-option"><input id="settingUseProxy" type="checkbox" checked><span><strong>使用代理池</strong><small>授权、额度查询和定时验活统一使用代理池；默认开启。</small></span></label>
+          <label class="setting-option"><input id="settingAutoCpa" type="checkbox" checked><span><strong>授权成功后自动上传 CPA</strong><small>启用前请先完成下方 CPA 上传配置。</small></span></label>
+          <label class="setting-option"><input id="settingAutoSub2Api" type="checkbox"><span><strong>授权成功后自动上传 Sub2API</strong><small>启用前请先完成下方 Sub2API 上传配置。</small></span></label>
+          <label class="setting-option setting-worker"><span><strong>授权线程数</strong><small>建议按本机网络和代理池规模设置，范围 1–32。</small></span><input id="settingWorkerCount" type="number" min="1" max="32" step="1" value="20"></label>
+          <label class="setting-option"><input id="settingScheduledLiveness" type="checkbox" checked><span><strong>启用定时验活</strong><small>检查已有 Token，只对明确失效的账号自动重新授权。</small></span></label>
+          <label class="setting-option"><input id="forceUpload" type="checkbox"><span><strong>上传时强制重传</strong><small>忽略本地已上传记录，每次上传都重新发送；默认关闭。</small></span></label>
+          <label class="setting-option setting-worker"><span><strong>验活执行频率（分钟）</strong><small>范围 5–10080；修改保存后立即重新计时。</small></span><input id="settingScheduledLivenessInterval" type="number" min="5" max="10080" step="1" value="5"></label>
+        </div>
+        <div class="scheduler-summary"><div><strong>定时验活</strong><span id="schedulerState" class="soft-pill">读取中</span></div><p id="schedulerDetail" class="hint">正在读取最近执行结果。</p></div>
+        <div class="settings-section-heading"><h3>上传平台配置</h3><p class="hint">管理员密码或密钥保存在本地数据目录中，页面只显示是否已配置，不会回显具体内容。</p></div>
+        <div class="upload-settings-grid">
+          <section class="upload-setting-card" aria-labelledby="cpaUploadSettingsTitle">
+            <div class="upload-setting-title"><h4 id="cpaUploadSettingsTitle">CPA / CLIProxyAPI</h4><span id="settingCpaStatus" class="soft-pill">未配置</span></div>
+            <label><span>服务地址</span><input id="settingCpaUrl" type="url" maxlength="2048" placeholder="http://127.0.0.1:8317" autocomplete="url"><small>可填写服务根地址，也可填写完整的 auth-files 地址。</small></label>
+            <label><span>管理员密码</span><input id="settingCpaKey" type="password" maxlength="512" placeholder="请输入管理员密码" autocomplete="new-password"><small>留空会保留已保存的管理员密码。</small></label>
+            <div class="upload-setting-footer"><label><span>超时（秒）</span><input id="settingCpaTimeout" type="number" min="1" max="120" step="1" value="30"></label></div>
+          </section>
+          <section class="upload-setting-card" aria-labelledby="sub2ApiUploadSettingsTitle">
+            <div class="upload-setting-title"><h4 id="sub2ApiUploadSettingsTitle">Sub2API</h4><span id="settingSub2ApiStatus" class="soft-pill">未配置</span></div>
+            <label><span>服务地址</span><input id="settingSub2ApiUrl" type="url" maxlength="2048" placeholder="https://sub2api.example.com" autocomplete="url"><small>可填写服务根地址，也可填写完整的批量上传地址。</small></label>
+            <label><span>管理员 API Key</span><input id="settingSub2ApiKey" type="password" maxlength="512" placeholder="请输入管理员 API Key" autocomplete="new-password"><small>留空会保留已保存的密钥。</small><small>获取路径：管理后台 → 系统设置 → 安全 → 管理员 API Key。请使用 <code>admin-</code> 开头的管理员 Key。</small></label>
+            <div class="upload-setting-footer"><label><span>超时（秒）</span><input id="settingSub2ApiTimeout" type="number" min="1" max="120" step="1" value="30"></label></div>
+          </section>
+        </div>
+        <div class="settings-actions"><button id="saveSettings" type="button">保存设置</button><span id="settingsResult" class="result"></span></div>
+        <p class="hint">定时验活调用 Codex 模型清单接口，只将缺少凭据、Token 明确过期或 HTTP 401 判为失效；403、429 和网络异常不会触发重新授权。手动额度查询仍使用额度接口。重新授权成功后会按上方开关自动上传，上传失败不会回滚授权结果。线程数保存后需要重启服务才能应用。</p>
+      </section>
+    </div>
+
+    <dialog id="importAccountsDialog" class="import-dialog" aria-labelledby="importAccountsTitle">
+      <form method="dialog" class="import-dialog-content">
+        <div class="dialog-header"><div><p class="eyebrow">ACCOUNT IMPORT</p><h2 id="importAccountsTitle">导入邮箱账号</h2></div><button id="closeImportAccounts" class="icon-button" type="button" aria-label="关闭导入窗口">×</button></div>
+        <p class="hint">每行：<code>邮箱----密码----Outlook 客户端 ID----Outlook 邮箱 refresh_token</code>。四段之间必须使用 <code>----</code>，不会接受邮箱单列或六段导出。</p>
+        <textarea id="accountsText" placeholder="user@example.com----password----client-id----mailbox-refresh-token" autofocus></textarea>
+        <div class="dialog-actions"><button id="cancelImportAccounts" class="secondary-button" type="button">取消</button><button id="importAccounts" type="button">导入账号</button></div>
+      </form>
+    </dialog>
+  </main>
+  <script src="/static/app.js?v=20"></script>
+</body>
+</html>
