@@ -344,12 +344,22 @@ class Repository:
                     created += 1
         return {"created": created, "updated": updated, "received": len(records)}
 
-    def list_accounts(self, limit: int = 200, offset: int = 0, query: str = "") -> tuple[list[dict[str, Any]], int]:
+    def list_accounts(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        query: str = "",
+        status: str = "",
+    ) -> tuple[list[dict[str, Any]], int]:
         limit = min(max(int(limit), 1), 5000)
         offset = max(int(offset), 0)
         tokens = [token.lower() for token in str(query or "").split() if token.strip()]
         where_parts: list[str] = []
         params: list[Any] = []
+        normalized_status = str(status or "").strip().lower()
+        if normalized_status in {"pending", "running", "success", "failed"}:
+            where_parts.append("lower(a.status)=?")
+            params.append(normalized_status)
         for token in tokens:
             where_parts.append(
                 """(
@@ -406,6 +416,19 @@ class Repository:
         with self.db.connect() as connection:
             row = connection.execute("SELECT * FROM accounts WHERE lower(email)=lower(?)", (email,)).fetchone()
         return dict(row) if row else None
+
+    def account_ids_by_status(self, status: str) -> list[str]:
+        """Return account ids in a specific authorization state."""
+
+        normalized = str(status or "").strip().lower()
+        if normalized not in {"pending", "running", "success", "failed"}:
+            return []
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                "SELECT id FROM accounts WHERE lower(status)=? ORDER BY updated_at DESC, email",
+                (normalized,),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
 
     def delete_accounts(self, account_ids: Sequence[str]) -> dict[str, int]:
         """Delete only the explicitly selected accounts and dependent records."""
@@ -749,6 +772,21 @@ class Repository:
             item["plan_label"] = self.plan_label(item.get("plan_type"))
             items.append(item)
         return items, total
+
+    def failed_quota_account_ids(self) -> list[str]:
+        """Return authorized accounts whose latest quota check failed."""
+
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT q.account_id
+                FROM quotas AS q
+                JOIN tokens AS t ON t.account_id=q.account_id
+                WHERE lower(COALESCE(q.status, '')) NOT IN ('success', 'pending', 'running', '')
+                ORDER BY q.checked_at DESC, q.account_id
+                """
+            ).fetchall()
+        return [str(row["account_id"]) for row in rows]
 
     @staticmethod
     def plan_label(plan_type: Any) -> str:

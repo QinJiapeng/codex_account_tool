@@ -41,6 +41,28 @@ def test_account_list_supports_pagination_and_fuzzy_search(tmp_path: Path):
     assert [item["email"] for item in matches] == ["beta@example.com"]
 
 
+def test_account_list_can_filter_authorization_status(tmp_path: Path):
+    database = Database(tmp_path / "tool.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "pending@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "failed@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+        {"email": "success@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "c" * 20},
+    ])
+    failed = repository.get_account_by_email("failed@example.com")
+    successful = repository.get_account_by_email("success@example.com")
+    assert failed and successful
+    repository.update_account(failed["id"], status="failed", error="invalid credentials")
+    repository.update_account(successful["id"], status="success", authorized=True)
+
+    items, total = repository.list_accounts(status="failed")
+    assert total == 1
+    assert [item["email"] for item in items] == ["failed@example.com"]
+    assert repository.account_ids_by_status("failed") == [failed["id"]]
+    assert repository.list_accounts(status="not-a-status")[1] == 3
+
+
 def test_account_list_returns_safe_per_platform_upload_status(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()
@@ -145,6 +167,27 @@ def test_quota_summary_aggregates_statuses_and_credit_tiers(tmp_path: Path):
     assert {tier["key"]: tier["count"] for tier in summary["tiers"]} == {
         "full": 1, "high": 0, "medium": 0, "low": 1, "zero": 1, "unlimited": 0,
     }
+
+
+def test_failed_quota_account_ids_only_returns_authorized_non_success_results(tmp_path: Path):
+    database = Database(tmp_path / "tool.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "quota-failed@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "quota-success@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+        {"email": "quota-no-result@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "c" * 20},
+    ])
+    failed = repository.get_account_by_email("quota-failed@example.com")
+    successful = repository.get_account_by_email("quota-success@example.com")
+    no_result = repository.get_account_by_email("quota-no-result@example.com")
+    assert failed and successful and no_result
+    for account in (failed, successful, no_result):
+        repository.save_token(account["id"], {"email": account["email"], "access_token": f"access-{account['id']}", "refresh_token": f"refresh-{account['id']}"})
+    repository.save_quota(failed["id"], {"status": "rate_limited", "http_status": 429})
+    repository.save_quota(successful["id"], {"status": "success", "credits_balance": 10, "credits_has": True})
+
+    assert set(repository.failed_quota_account_ids()) == {failed["id"]}
 
 
 def test_legacy_free_monthly_window_is_not_displayed_as_five_hours(tmp_path: Path):

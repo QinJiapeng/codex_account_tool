@@ -10,6 +10,7 @@ from app.config import Settings
 from app import service
 from app.db import Database, Repository
 from app.main import create_app
+from app.service import QuotaService, ReauthService
 
 
 def _record(email="user@example.com"):
@@ -324,6 +325,68 @@ def test_api_list_hides_credentials_and_export_is_explicit(tmp_path: Path, monke
         deleted = client.request("DELETE", "/api/accounts", json={"ids": [item["id"]]})
         assert deleted.status_code == 200
         assert deleted.json()["deleted"] == 1
+
+
+def test_api_status_filter_and_targeted_retry_routes(tmp_path: Path, monkeypatch):
+    settings = Settings(
+        host="127.0.0.1",
+        port=10717,
+        data_dir=tmp_path,
+        worker_count=1,
+        use_proxy_default=False,
+        proxy_lease_seconds=60,
+        proxy_cooldown_seconds=5,
+        outlook_imap_host="outlook.example",
+        outlook_imap_port=993,
+        otp_poll_seconds=2,
+        otp_timeout_seconds=30,
+        quota_timeout_ms=1000,
+        usage_url="https://usage.example",
+        usage_version="test",
+    )
+    queue_calls: list[list[str]] = []
+    quota_calls: list[list[str]] = []
+
+    async def fake_queue(self, account_ids=None, *, use_proxy=False, event_message=""):
+        ids = [str(account_id) for account_id in (account_ids or [])]
+        queue_calls.append(ids)
+        return {"queued": len(ids), "duplicate": 0, "skipped": 0, "use_proxy": bool(use_proxy), "jobs": []}
+
+    async def fake_refresh(self, account_ids=None, *, use_proxy=False):
+        ids = [str(account_id) for account_id in (account_ids or [])]
+        quota_calls.append(ids)
+        return {"total": len(ids), "results": [{"account_id": account_id, "success": True} for account_id in ids], "summary": {}}
+
+    monkeypatch.setattr(ReauthService, "queue_accounts", fake_queue)
+    monkeypatch.setattr(QuotaService, "refresh", fake_refresh)
+    with TestClient(create_app(settings)) as client:
+        imported = client.post("/api/accounts/import", json={"text": "failed@example.com----pw----cid----" + "a" * 20 + "\nsuccess@example.com----pw----cid----" + "b" * 20})
+        assert imported.status_code == 200
+        repository = Repository(Database(settings.db_path))
+        failed = repository.get_account_by_email("failed@example.com")
+        successful = repository.get_account_by_email("success@example.com")
+        assert failed and successful
+        for account in (failed, successful):
+            repository.save_token(account["id"], {"email": account["email"], "access_token": "access", "refresh_token": "refresh"})
+        repository.update_account(failed["id"], status="failed", error="test failure")
+        repository.update_account(successful["id"], status="success", authorized=True)
+        repository.save_quota(failed["id"], {"status": "rate_limited", "http_status": 429})
+        repository.save_quota(successful["id"], {"status": "success", "credits_balance": 50, "credits_has": True})
+
+        filtered = client.get("/api/accounts?status=failed&page=1&page_size=20")
+        assert filtered.status_code == 200
+        assert filtered.json()["status"] == "failed"
+        assert [item["email"] for item in filtered.json()["items"]] == ["failed@example.com"]
+
+        retry_reauth = client.post("/api/reauth/retry-failed")
+        assert retry_reauth.status_code == 200
+        assert retry_reauth.json()["matched"] == 1
+        assert queue_calls == [[failed["id"]]]
+
+        retry_quota = client.post("/api/quotas/refresh-failed")
+        assert retry_quota.status_code == 200
+        assert retry_quota.json()["matched"] == 1
+        assert quota_calls == [[failed["id"]]]
 
 
 def test_authorization_workbench_contains_import_dialog_and_no_separate_account_tab():

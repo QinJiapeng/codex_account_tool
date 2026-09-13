@@ -177,17 +177,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page: int | None = Query(None, ge=1),
         page_size: int | None = Query(None, ge=1, le=5000),
         q: str = Query("", max_length=200),
+        status: str = Query("", max_length=40),
     ) -> dict[str, Any]:
         paged = page is not None or page_size is not None
         effective_size = int(page_size if page_size is not None else limit)
         effective_page = int(page if page is not None else (offset // effective_size) + 1)
         effective_offset = (effective_page - 1) * effective_size if paged else offset
-        items, total = request.app.state.repository.list_accounts(effective_size, effective_offset, q)
+        items, total = request.app.state.repository.list_accounts(effective_size, effective_offset, q, status)
         total_pages = max(1, (total + effective_size - 1) // effective_size)
         if paged and total and effective_page > total_pages:
             effective_page = total_pages
             effective_offset = (effective_page - 1) * effective_size
-            items, total = request.app.state.repository.list_accounts(effective_size, effective_offset, q)
+            items, total = request.app.state.repository.list_accounts(effective_size, effective_offset, q, status)
         return {
             "items": items,
             "total": total,
@@ -197,6 +198,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "page_size": effective_size,
             "total_pages": total_pages,
             "q": q.strip(),
+            "status": status.strip().lower() if status.strip().lower() in {"pending", "running", "success", "failed"} else "",
         }
 
     @application.delete("/api/accounts")
@@ -477,6 +479,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         use_proxy = str(use_proxy).lower() in {"1", "true", "yes", "on"} if not isinstance(use_proxy, bool) else use_proxy
         return await request.app.state.reauth.queue_accounts(ids_from_body(body), use_proxy=use_proxy)
 
+    @application.post("/api/reauth/retry-failed")
+    async def retry_failed_reauth(request: Request) -> dict[str, Any]:
+        """Retry only accounts whose latest authorization attempt failed."""
+
+        body = await json_body(request)
+        use_proxy = body.get("use_proxy", request.app.state.settings.use_proxy_default)
+        use_proxy = str(use_proxy).lower() in {"1", "true", "yes", "on"} if not isinstance(use_proxy, bool) else use_proxy
+        account_ids = request.app.state.repository.account_ids_by_status("failed")
+        result = await request.app.state.reauth.queue_accounts(account_ids, use_proxy=use_proxy)
+        result["matched"] = len(account_ids)
+        return result
+
     @application.get("/api/reauth/jobs")
     async def list_jobs(request: Request, limit: int = Query(200, ge=1, le=5000)) -> dict[str, Any]:
         return {"items": request.app.state.repository.list_jobs(limit)}
@@ -509,6 +523,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return await request.app.state.quota.refresh(ids_from_body(body), use_proxy=use_proxy)
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=safe_error(error)) from error
+
+    @application.post("/api/quotas/refresh-failed")
+    async def refresh_failed_quotas(request: Request) -> dict[str, Any]:
+        """Retry only accounts whose latest quota query failed."""
+
+        body = await json_body(request)
+        use_proxy = body.get("use_proxy", request.app.state.settings.use_proxy_default)
+        use_proxy = str(use_proxy).lower() in {"1", "true", "yes", "on"} if not isinstance(use_proxy, bool) else use_proxy
+        account_ids = request.app.state.repository.failed_quota_account_ids()
+        try:
+            result = await request.app.state.quota.refresh(account_ids, use_proxy=use_proxy)
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=safe_error(error)) from error
+        result["matched"] = len(account_ids)
+        return result
 
     @application.get("/api/quotas/progress")
     async def quota_progress(request: Request) -> dict[str, Any]:

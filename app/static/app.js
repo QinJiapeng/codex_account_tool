@@ -23,6 +23,9 @@ const initialAccountParams = new URLSearchParams(window.location.search);
 const initialAccountPage = Number(initialAccountParams.get("page"));
 const initialAccountPageSize = Number(initialAccountParams.get("page_size"));
 let accountSearchQuery = String(initialAccountParams.get("q") || "").slice(0, 200);
+const validAccountStatuses = ["", "pending", "running", "success", "failed"];
+const initialAccountStatus = String(initialAccountParams.get("status") || "").toLowerCase();
+let accountStatusFilter = validAccountStatuses.includes(initialAccountStatus) ? initialAccountStatus : "";
 const initialProxyPage = Number(initialAccountParams.get("proxy_page"));
 const initialProxyPageSize = Number(initialAccountParams.get("proxy_page_size"));
 let accountGlobalTotal = 0;
@@ -51,9 +54,11 @@ const operationState = {
   reauthBusy: false,
   reauthIds: new Set(),
   reauthTargetCount: 0,
+  targetedReauthBusy: false,
   quotaBusy: false,
   quotaIds: new Set(),
   quotaTargetCount: 0,
+  targetedQuotaBusy: false,
 };
 
 function escapeHtml(value) {
@@ -327,10 +332,11 @@ function renderQuotaSummary(summary = {}) {
   $("statFree").textContent = formatCredit(planCounts.free);
   $("statPlus").textContent = formatCredit(planCounts.plus);
   const allowedTones = new Set(["gold", "blue", "green", "orange", "red", "purple"]);
-  $("quotaTiers").innerHTML = (summary.tiers || []).map((tier) => {
+  $("quotaTiers").innerHTML = (summary.tiers || []).filter((tier) => tier.key !== "unlimited").map((tier) => {
     const tone = allowedTones.has(tier.tone) ? tier.tone : "blue";
     const description = tier.description ? `<span>${escapeHtml(tier.description)}</span>` : "";
-    return `<article class="quota-tier quota-tier-${tone}"><div><strong>${escapeHtml(tier.label)}</strong>${description}</div><b>${formatCredit(tier.count)}</b></article>`;
+    const label = tier.key === "zero" ? "无额度" : tier.label;
+    return `<article class="quota-tier quota-tier-${tone}"><div><strong>${escapeHtml(label)}</strong>${description}</div><b>${formatCredit(tier.count)}</b></article>`;
   }).join("");
 }
 
@@ -404,6 +410,8 @@ function syncAccountListUrl() {
   url.searchParams.set("page_size", String(accountPagination.pageSize));
   if (accountSearchQuery.trim()) url.searchParams.set("q", accountSearchQuery.trim());
   else url.searchParams.delete("q");
+  if (accountStatusFilter) url.searchParams.set("status", accountStatusFilter);
+  else url.searchParams.delete("status");
   url.searchParams.set("proxy_page", String(proxyPagination.page));
   url.searchParams.set("proxy_page_size", String(proxyPagination.pageSize));
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
@@ -537,13 +545,25 @@ function updateAccountSelectionState() {
     : count ? `刷新选中额度（${count}）` : "查询全部额度";
   const reauthButton = $("reauthSelected");
   const quotaButton = $("quotaSelected");
-  reauthButton.disabled = !hasAccounts || operationState.reauthBusy;
-  quotaButton.disabled = !hasAccounts || operationState.quotaBusy;
+  reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy;
+  quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy;
   reauthButton.classList.toggle("is-busy", operationState.reauthBusy);
   quotaButton.classList.toggle("is-busy", operationState.quotaBusy);
   reauthButton.setAttribute("aria-busy", String(operationState.reauthBusy));
   quotaButton.setAttribute("aria-busy", String(operationState.quotaBusy));
-  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.quotaBusy;
+  const retryReauthButton = $("retryFailedReauth");
+  const retryQuotaButton = $("retryFailedQuota");
+  if (retryReauthButton) {
+    retryReauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.quotaBusy || operationState.targetedQuotaBusy;
+    retryReauthButton.classList.toggle("is-busy", operationState.targetedReauthBusy);
+    retryReauthButton.setAttribute("aria-busy", String(operationState.targetedReauthBusy));
+  }
+  if (retryQuotaButton) {
+    retryQuotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.reauthBusy || operationState.targetedReauthBusy;
+    retryQuotaButton.classList.toggle("is-busy", operationState.targetedQuotaBusy);
+    retryQuotaButton.setAttribute("aria-busy", String(operationState.targetedQuotaBusy));
+  }
+  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy;
 }
 
 async function refreshData({showError = true} = {}) {
@@ -558,6 +578,7 @@ async function refreshData({showError = true} = {}) {
       page_size: String(accountPagination.pageSize),
     });
     if (accountSearchQuery.trim()) accountParams.set("q", accountSearchQuery.trim());
+    if (accountStatusFilter) accountParams.set("status", accountStatusFilter);
     const proxyParams = new URLSearchParams({
       page: String(proxyPagination.page),
       page_size: String(proxyPagination.pageSize),
@@ -657,6 +678,12 @@ $("accountSearch").addEventListener("input", (event) => {
   accountSearchTimer = window.setTimeout(() => refreshData(), 250);
 });
 
+$("accountStatusFilter").addEventListener("change", (event) => {
+  accountStatusFilter = String(event.target.value || "").toLowerCase();
+  accountPagination.page = 1;
+  refreshData();
+});
+
 async function goToAccountPage(page) {
   const target = Math.min(accountPagination.totalPages, Math.max(1, Number(page) || 1));
   if (target === accountPagination.page && accountListItems.length) {
@@ -750,8 +777,36 @@ async function runAccountAction(path) {
   }
 }
 
+async function runTargetedAccountAction(path, label) {
+  const isReauth = path === "/api/reauth/retry-failed";
+  const busyKey = isReauth ? "targetedReauthBusy" : "targetedQuotaBusy";
+  const button = $(isReauth ? "retryFailedReauth" : "retryFailedQuota");
+  if (!button || button.disabled) return;
+  operationState[busyKey] = true;
+  updateAccountSelectionState();
+  setAccountResult("actionResult", `${label}，请稍候…`);
+  try {
+    const result = await api(path, {method: "POST", body: "{}"});
+    const matched = Number(result.matched || 0);
+    if (isReauth) {
+      setAccountResult("actionResult", `${label}：匹配 ${matched} 个，加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个`);
+    } else {
+      const completed = Array.isArray(result.results) ? result.results.length : 0;
+      setAccountResult("actionResult", `${label}：匹配 ${matched} 个，完成 ${completed} 个`);
+    }
+    await refreshData();
+  } catch (error) {
+    setAccountResult("actionResult", error.message);
+  } finally {
+    operationState[busyKey] = false;
+    updateAccountSelectionState();
+  }
+}
+
 $("reauthSelected").onclick = () => runAccountAction("/api/reauth/queue").catch((error) => { setAccountResult("actionResult", error.message); });
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
+$("retryFailedReauth").onclick = () => runTargetedAccountAction("/api/reauth/retry-failed", "重新授权失败账号");
+$("retryFailedQuota").onclick = () => runTargetedAccountAction("/api/quotas/refresh-failed", "查询失败额度账号");
 $("deleteSelected").onclick = async () => {
   const ids = [...selectedAccounts];
   if (!ids.length || !window.confirm(`确定删除选中的 ${ids.length} 个账号吗？相关 Token、额度和授权任务也会删除。`)) return;
@@ -835,6 +890,7 @@ $("saveSettings").onclick = async () => {
   } catch (error) { $("settingsResult").textContent = error.message; }
 };
 $("accountSearch").value = accountSearchQuery;
+$("accountStatusFilter").value = ["", "pending", "running", "success", "failed"].includes(accountStatusFilter) ? accountStatusFilter : "";
 $("accountPageSize").value = String(accountPagination.pageSize);
 $("accountPage").value = String(accountPagination.page);
 $("proxyPageSize").value = String(proxyPagination.pageSize);
