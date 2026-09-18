@@ -261,6 +261,7 @@ def build_export_document(records: Sequence[Mapping[str, Any]], format: str = "c
                     "exported_at": datetime.now(timezone.utc).isoformat(),
                     "proxies": [],
                     "accounts": [account],
+                    "original_email": str(record.get("original_email") or account["name"]).strip().lower(),
                 }
                 base = f"sub2api-{_safe_download_part(account.get('name'))}"
                 filename = f"{base}.sub2api.json"

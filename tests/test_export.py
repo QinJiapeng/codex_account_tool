@@ -84,7 +84,7 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
     assert account["extra"]["email_key"] == "user_example_com"
     assert account["credentials"]["organization_id"] == "org-123"
     assert "client_id" not in account["credentials"]
-    assert "original_email" not in payload
+    assert payload["original_email"] == "user@example.com"
     assert account["priority"] == 1
     assert "mail-password" not in content.decode("latin1")
 
@@ -116,6 +116,15 @@ def test_sub2api_export_contains_keypickup_compatible_jwt_claims():
 def test_sub2api_export_rejects_non_jwt_credentials():
     with pytest.raises(ValueError, match="access_token 不是有效 JWT"):
         service.build_export_document([_record()], "sub2api")
+
+
+def test_sub2api_export_preserves_original_email():
+    record = _sub2api_record()
+    record["original_email"] = "source@example.com"
+    content, _, _ = service.build_export_document([record], "sub2api")
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        payload = json.loads(archive.read(archive.namelist()[0]))
+    assert payload["original_email"] == "source@example.com"
 
 
 def test_multiple_cpa_accounts_are_downloaded_as_zip():
