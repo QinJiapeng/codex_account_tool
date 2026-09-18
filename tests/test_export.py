@@ -13,6 +13,13 @@ from app.main import create_app
 from app.service import QuotaService, ReauthService
 
 
+def _jwt(payload):
+    import base64
+
+    encoded = lambda value: base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
+    return f"{encoded({'alg': 'none'})}.{encoded(payload)}.signature"
+
+
 def _record(email="user@example.com"):
     return {
         "id": "account-1",
@@ -29,6 +36,21 @@ def _record(email="user@example.com"):
             "client_id": "oauth-client-id",
         },
     }
+
+
+def _sub2api_record(email="user@example.com"):
+    record = _record(email)
+    auth = {
+        "chatgpt_account_id": "acct-123",
+        "chatgpt_user_id": "user-123",
+        "chatgpt_plan_type": "free",
+        "organizations": [{"id": "org-123", "is_default": True}],
+    }
+    record["token"].update({
+        "access_token": _jwt({"exp": 4102444800, "email": email, "https://api.openai.com/auth": auth}),
+        "id_token": _jwt({"email": email, "https://api.openai.com/auth": auth}),
+    })
+    return record
 
 
 def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
@@ -50,7 +72,7 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
     assert "mail-password" not in content.decode("latin1")
     assert "mailbox-refresh-token" not in content.decode("latin1")
 
-    content, media_type, filename = service.build_export_document([record], "sub2api")
+    content, media_type, filename = service.build_export_document([_sub2api_record()], "sub2api")
     assert media_type == "application/zip"
     assert filename == "sub2api-1-accounts.zip"
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -60,31 +82,27 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
     assert account["credentials"]["refresh_token"] == "oauth-refresh-secret"
     assert account["credentials"]["email"] == "user@example.com"
     assert account["extra"]["email_key"] == "user_example_com"
-    assert account["credentials"]["client_id"] == service.DEFAULT_CODEX_CLIENT_ID
+    assert account["credentials"]["organization_id"] == "org-123"
+    assert "client_id" not in account["credentials"]
+    assert "original_email" not in payload
     assert account["priority"] == 1
     assert "mail-password" not in content.decode("latin1")
 
 
 def test_sub2api_export_contains_keypickup_compatible_jwt_claims():
-    import base64
-
-    def token(payload):
-        encode = lambda value: base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
-        return f"{encode({'alg': 'none'})}.{encode(payload)}.x"
-
-    record = _record()
+    record = _sub2api_record()
     record["token"]["account_id"] = ""
-    record["token"]["access_token"] = token({
+    record["token"]["access_token"] = _jwt({
         "exp": 4102444800,
         "email": "user@example.com",
         "https://api.openai.com/auth": {
             "chatgpt_account_id": "acct-jwt",
-            "poid": "org-jwt",
+            "organizations": [{"id": "org-jwt", "is_default": True}],
             "chatgpt_plan_type": "plus",
+            "chatgpt_user_id": "user-jwt",
         },
-        "sub": "user-jwt",
     })
-    record["token"]["id_token"] = token({"email": "user@example.com"})
+    record["token"]["id_token"] = _jwt({"email": "user@example.com"})
     content, _, _ = service.build_export_document([record], "sub2api")
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
         account = json.loads(archive.read(archive.namelist()[0]))["accounts"][0]
@@ -93,6 +111,11 @@ def test_sub2api_export_contains_keypickup_compatible_jwt_claims():
     assert account["credentials"]["organization_id"] == "org-jwt"
     assert account["credentials"]["expires_at"] == "2100-01-01T00:00:00Z"
     assert account["credentials"]["plan_type"] == "plus"
+
+
+def test_sub2api_export_rejects_non_jwt_credentials():
+    with pytest.raises(ValueError, match="access_token 不是有效 JWT"):
+        service.build_export_document([_record()], "sub2api")
 
 
 def test_multiple_cpa_accounts_are_downloaded_as_zip():
@@ -209,7 +232,7 @@ async def test_sub2api_upload_sends_batch_accounts_without_echoing_auth_header(m
     monkeypatch.setenv("SUB2API_ADMIN_API_KEY", "admin-secret")
     monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
 
-    result = await service.upload_sub2api_records([_record()])
+    result = await service.upload_sub2api_records([_sub2api_record()])
 
     assert result["uploaded"] == 1
     url, kwargs = _FakeAsyncClient.calls[0]
@@ -219,7 +242,7 @@ async def test_sub2api_upload_sends_batch_accounts_without_echoing_auth_header(m
     body = json.loads(kwargs["content"])
     assert list(body) == ["accounts"]
     assert body["accounts"][0]["name"] == "user@example.com"
-    assert body["accounts"][0]["credentials"]["access_token"] == "access-secret"
+    assert body["accounts"][0]["credentials"]["access_token"].count(".") == 2
     assert "mail-password" not in kwargs["content"].decode()
 
 

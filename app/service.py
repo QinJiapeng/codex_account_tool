@@ -138,33 +138,17 @@ def _email_key(email: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", email.lower()).strip("_")
 
 
-def _synthetic_id_token(email: str, account_id: str, user_id: str, expires_at: str) -> str:
-    if not account_id:
-        return ""
-    now = int(datetime.now(timezone.utc).timestamp())
-    expires = int(datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp()) if expires_at else now + 90 * 86400
-    header = {"alg": "none", "typ": "JWT", "cpa_synthetic": True}
-    payload = {
-        "iat": now,
-        "exp": expires,
-        "email": email,
-        "https://api.openai.com/auth": {
-            "chatgpt_account_id": account_id,
-            **({"chatgpt_user_id": user_id, "user_id": user_id} if user_id else {}),
-        },
-    }
+def _sub2api_account(record: Mapping[str, Any], *, require_jwt: bool = False) -> dict[str, Any]:
+    """Convert one CPA-shaped record using CPA2sub2API's OpenAI rules."""
 
-    def encode(value: Mapping[str, Any]) -> str:
-        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-    return f"{encode(header)}.{encode(payload)}.synthetic"
-
-
-def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
     payload = _cpa_payload(record)
     access_payload = _jwt_payload(payload["access_token"])
-    id_payload = _jwt_payload(payload.get("id_token"))
+    id_payload = _jwt_payload(payload["id_token"])
+    email_hint = str(payload.get("email") or "账号").strip().lower()
+    if require_jwt and not access_payload:
+        raise ValueError(f"{email_hint} 的 access_token 不是有效 JWT，无法导出 Sub2API")
+    if require_jwt and not id_payload:
+        raise ValueError(f"{email_hint} 的 id_token 不是有效 JWT，无法导出 Sub2API")
     access_auth = _jwt_auth(access_payload)
     id_auth = _jwt_auth(id_payload)
     access_profile = _jwt_profile(access_payload)
@@ -179,8 +163,6 @@ def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
         or access_auth.get("user_id")
         or id_auth.get("chatgpt_user_id")
         or id_auth.get("user_id")
-        or access_payload.get("sub")
-        or id_payload.get("sub")
         or ""
     ).strip()
     email = str(
@@ -189,12 +171,7 @@ def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
         or access_payload.get("email")
         or id_payload.get("email")
     ).strip().lower()
-    expires_at = _iso_expiry(
-        access_payload.get("exp")
-        or access_payload.get("expires_at")
-        or access_payload.get("expiresAt")
-        or id_payload.get("exp")
-    )
+    expires_at = _iso_expiry(record.get("expired")) or _iso_expiry(access_payload.get("exp"))
     now = datetime.now(timezone.utc)
     expires_in = None
     if expires_at:
@@ -202,14 +179,12 @@ def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
             expires_in = max(0, int((datetime.fromisoformat(expires_at.replace("Z", "+00:00")) - now).total_seconds()))
         except ValueError:
             expires_in = None
-    id_token = payload.get("id_token") or _synthetic_id_token(email, account_id, user_id, expires_at)
     credentials = {
         "access_token": payload["access_token"],
         "refresh_token": payload["refresh_token"],
         "email": email,
+        "id_token": payload["id_token"],
     }
-    if id_token:
-        credentials["id_token"] = id_token
     if account_id:
         credentials["chatgpt_account_id"] = account_id
     if user_id:
@@ -221,33 +196,26 @@ def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
     plan_type = access_auth.get("chatgpt_plan_type") or id_auth.get("chatgpt_plan_type")
     if plan_type:
         credentials["plan_type"] = str(plan_type)
-    organization_id = (
-        id_auth.get("organization_id")
-        or access_auth.get("organization_id")
-        or id_auth.get("poid")
-        or access_auth.get("poid")
-    )
-    if not organization_id:
-        for auth in (id_auth, access_auth):
-            organizations = auth.get("organizations")
-            if isinstance(organizations, list):
-                preferred = next((item for item in organizations if isinstance(item, Mapping) and item.get("is_default") and item.get("id")), None)
-                organization_id = (preferred or next((item for item in organizations if isinstance(item, Mapping) and item.get("id")), {})).get("id")
-                if organization_id:
-                    break
+    organization_id = ""
+    for auth in (id_auth, access_auth):
+        organizations = auth.get("organizations")
+        if not isinstance(organizations, list):
+            continue
+        preferred = next((item for item in organizations if isinstance(item, Mapping) and item.get("is_default") and item.get("id")), None)
+        selected = preferred or next((item for item in organizations if isinstance(item, Mapping) and item.get("id")), None)
+        if isinstance(selected, Mapping):
+            organization_id = str(selected.get("id") or "").strip()
+        if organization_id:
+            break
     if organization_id:
-        credentials["organization_id"] = str(organization_id)
-    if payload.get("refresh_token"):
-        # Sub2API uses this client ID when it refreshes an imported OAuth token.
-        credentials["client_id"] = DEFAULT_CODEX_CLIENT_ID
-    updated_at = str(record.get("token_updated_at") or "").strip()
-    last_refresh = _iso_expiry(updated_at) or now.isoformat().replace("+00:00", "Z")
+        credentials["organization_id"] = organization_id
+    last_refresh = _iso_expiry(record.get("last_refresh") or record.get("token_updated_at"))
     extra: dict[str, Any] = {
         "email": email,
         "email_key": _email_key(email),
-        "last_refresh": last_refresh,
-        "original_email": email,
     }
+    if last_refresh:
+        extra["last_refresh"] = last_refresh
     return {
         "name": email,
         "platform": "openai",
@@ -288,12 +256,11 @@ def build_export_document(records: Sequence[Mapping[str, Any]], format: str = "c
         used: set[str] = set()
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
             for record in rows:
-                account = _sub2api_account(record)
+                account = _sub2api_account(record, require_jwt=True)
                 document = {
                     "exported_at": datetime.now(timezone.utc).isoformat(),
                     "proxies": [],
                     "accounts": [account],
-                    "original_email": account["name"],
                 }
                 base = f"sub2api-{_safe_download_part(account.get('name'))}"
                 filename = f"{base}.sub2api.json"
@@ -516,7 +483,7 @@ async def upload_sub2api_records(
         return {"requested": 0, "uploaded": 0, "failed": 0, "items": []}
     endpoint, _ = _sub2api_endpoint(api_url)
     key = _sub2api_key(admin_api_key)
-    accounts = [_sub2api_account(record) for record in rows]
+    accounts = [_sub2api_account(record, require_jwt=True) for record in rows]
     body = {
         "accounts": accounts,
     }
