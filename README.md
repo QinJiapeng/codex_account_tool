@@ -163,7 +163,7 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 
 - 邮箱四段 TXT：导出最新的邮箱、密码、Outlook 客户端 ID 和 Outlook refresh token。
 - CPA ZIP：每个账号生成一个包含 Codex OAuth 凭据的 JSON 文件。
-- Sub2API ZIP：生成标准 `sub2api-data` JSON 并打包下载。
+- Sub2API ZIP：每个账号生成一个可直接在 Sub2API 数据导入中使用的认证 JSON 文件，并打包下载。
 
 只有已经保存 OAuth Token 的账号会进入 CPA 和 Sub2API 导出。导出文件包含可用凭据，应当按密码文件保护，禁止上传到公开网盘或提交到 Git。
 

@@ -52,14 +52,44 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
 
     content, media_type, filename = service.build_export_document([record], "sub2api")
     assert media_type == "application/zip"
-    assert filename.endswith(".zip")
+    assert filename == "sub2api-1-accounts.zip"
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
-        assert archive.namelist() == ["sub2api-1-accounts.json"]
+        assert archive.namelist() == ["sub2api-user@example.com.sub2api.json"]
         payload = json.loads(archive.read(archive.namelist()[0]))
     account = payload["accounts"][0]
-    assert payload["type"] == "sub2api-data"
     assert account["credentials"]["refresh_token"] == "oauth-refresh-secret"
+    assert account["credentials"]["email"] == "user@example.com"
+    assert account["extra"]["email_key"] == "user_example_com"
+    assert account["priority"] == 1
     assert "mail-password" not in content.decode("latin1")
+
+
+def test_sub2api_export_contains_keypickup_compatible_jwt_claims():
+    import base64
+
+    def token(payload):
+        encode = lambda value: base64.urlsafe_b64encode(json.dumps(value, separators=(",", ":")).encode()).decode().rstrip("=")
+        return f"{encode({'alg': 'none'})}.{encode(payload)}.x"
+
+    record = _record()
+    record["token"]["account_id"] = ""
+    record["token"]["access_token"] = token({
+        "exp": 4102444800,
+        "email": "user@example.com",
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": "acct-jwt",
+            "chatgpt_user_id": "user-jwt",
+            "chatgpt_plan_type": "plus",
+        },
+    })
+    record["token"]["id_token"] = token({"email": "user@example.com"})
+    content, _, _ = service.build_export_document([record], "sub2api")
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        account = json.loads(archive.read(archive.namelist()[0]))["accounts"][0]
+    assert account["credentials"]["chatgpt_account_id"] == "acct-jwt"
+    assert account["credentials"]["chatgpt_user_id"] == "user-jwt"
+    assert account["credentials"]["expires_at"] == "2100-01-01T00:00:00Z"
+    assert account["credentials"]["plan_type"] == "plus"
 
 
 def test_multiple_cpa_accounts_are_downloaded_as_zip():

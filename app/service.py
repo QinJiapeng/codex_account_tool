@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -82,34 +83,161 @@ def _cpa_payload(record: Mapping[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _jwt_payload(token: Any) -> dict[str, Any]:
+    """Decode a JWT payload without validating it or retaining its contents."""
+
+    value = str(token or "").strip()
+    parts = value.split(".")
+    if len(parts) < 2:
+        return {}
+    try:
+        padding = "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode((parts[1] + padding).encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeError, json.JSONDecodeError, base64.binascii.Error):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _jwt_auth(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = payload.get("https://api.openai.com/auth")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _jwt_profile(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = payload.get("https://api.openai.com/profile")
+    return value if isinstance(value, Mapping) else {}
+
+
+def _iso_expiry(value: Any) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = 0
+    if numeric:
+        # JWT exp is expressed in seconds; tolerate millisecond timestamps too.
+        if numeric > 100_000_000_000:
+            numeric /= 1000
+        try:
+            return datetime.fromtimestamp(numeric, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        except (OverflowError, OSError, ValueError):
+            return ""
+    if isinstance(value, str) and value.strip():
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return ""
+
+
+def _email_key(email: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", email.lower()).strip("_")
+
+
+def _synthetic_id_token(email: str, account_id: str, user_id: str, expires_at: str) -> str:
+    if not account_id:
+        return ""
+    now = int(datetime.now(timezone.utc).timestamp())
+    expires = int(datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp()) if expires_at else now + 90 * 86400
+    header = {"alg": "none", "typ": "JWT", "cpa_synthetic": True}
+    payload = {
+        "iat": now,
+        "exp": expires,
+        "email": email,
+        "https://api.openai.com/auth": {
+            "chatgpt_account_id": account_id,
+            **({"chatgpt_user_id": user_id, "user_id": user_id} if user_id else {}),
+        },
+    }
+
+    def encode(value: Mapping[str, Any]) -> str:
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode(header)}.{encode(payload)}.synthetic"
+
+
 def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
     payload = _cpa_payload(record)
+    access_payload = _jwt_payload(payload["access_token"])
+    id_payload = _jwt_payload(payload.get("id_token"))
+    access_auth = _jwt_auth(access_payload)
+    id_auth = _jwt_auth(id_payload)
+    access_profile = _jwt_profile(access_payload)
+    account_id = str(
+        payload.get("account_id")
+        or access_auth.get("chatgpt_account_id")
+        or id_auth.get("chatgpt_account_id")
+        or ""
+    ).strip()
+    user_id = str(
+        access_auth.get("chatgpt_user_id")
+        or access_auth.get("user_id")
+        or id_auth.get("chatgpt_user_id")
+        or id_auth.get("user_id")
+        or ""
+    ).strip()
+    email = str(
+        payload["email"]
+        or access_profile.get("email")
+        or access_payload.get("email")
+        or id_payload.get("email")
+    ).strip().lower()
+    expires_at = _iso_expiry(
+        access_payload.get("exp")
+        or access_payload.get("expires_at")
+        or access_payload.get("expiresAt")
+        or id_payload.get("exp")
+    )
+    now = datetime.now(timezone.utc)
+    expires_in = None
+    if expires_at:
+        try:
+            expires_in = max(0, int((datetime.fromisoformat(expires_at.replace("Z", "+00:00")) - now).total_seconds()))
+        except ValueError:
+            expires_in = None
+    id_token = payload.get("id_token") or _synthetic_id_token(email, account_id, user_id, expires_at)
     credentials = {
         "access_token": payload["access_token"],
         "refresh_token": payload["refresh_token"],
-        "email": payload["email"],
+        "email": email,
     }
-    if payload.get("id_token"):
-        credentials["id_token"] = payload["id_token"]
-    if payload.get("account_id"):
-        credentials["chatgpt_account_id"] = payload["account_id"]
-    extra: dict[str, Any] = {"email": payload["email"]}
-    if payload.get("client_id"):
-        extra["client_id"] = payload["client_id"]
-    if payload.get("account_id"):
-        extra.update({"account_id": payload["account_id"], "chatgpt_account_id": payload["account_id"]})
+    if id_token:
+        credentials["id_token"] = id_token
+    if account_id:
+        credentials["chatgpt_account_id"] = account_id
+    if user_id:
+        credentials["chatgpt_user_id"] = user_id
+    if expires_at:
+        credentials["expires_at"] = expires_at
+    if expires_in is not None:
+        credentials["expires_in"] = expires_in
+    plan_type = access_auth.get("chatgpt_plan_type") or id_auth.get("chatgpt_plan_type")
+    if plan_type:
+        credentials["plan_type"] = str(plan_type)
+    organization_id = id_auth.get("organization_id") or access_auth.get("organization_id")
+    if organization_id:
+        credentials["organization_id"] = str(organization_id)
+    updated_at = str(record.get("token_updated_at") or "").strip()
+    last_refresh = _iso_expiry(updated_at) or now.isoformat().replace("+00:00", "Z")
+    extra: dict[str, Any] = {
+        "email": email,
+        "email_key": _email_key(email),
+        "last_refresh": last_refresh,
+        "original_email": email,
+    }
     return {
-        "name": payload["email"],
+        "name": email,
         "platform": "openai",
         "type": "oauth",
-        "credentials": credentials,
-        "extra": extra,
-        "status": "active",
-        "schedulable": True,
         "concurrency": 10,
         "priority": 1,
-        "rate_multiplier": 1,
-        "auto_pause_on_expired": True,
+        "credentials": credentials,
+        "extra": extra,
     }
 
 
@@ -136,17 +264,27 @@ def build_export_document(records: Sequence[Mapping[str, Any]], format: str = "c
         return content, "text/plain; charset=utf-8", f"codex-account-four-segment-{len(lines)}.txt"
 
     if selected == "sub2api":
-        document = {
-            "type": "sub2api-data",
-            "version": 1,
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "proxies": [],
-            "accounts": [_sub2api_account(record) for record in rows],
-        }
-        document_content = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+        # Sub2API 导入器识别的是“每个账号一个认证文件”的格式：文件本身
+        # 是包含单个 accounts 元素的 JSON，而不是带 type/version 的批量封装。
         archive = io.BytesIO()
+        used: set[str] = set()
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            bundle.writestr(f"sub2api-{len(rows)}-accounts.json", document_content)
+            for record in rows:
+                account = _sub2api_account(record)
+                document = {
+                    "exported_at": datetime.now(timezone.utc).isoformat(),
+                    "proxies": [],
+                    "accounts": [account],
+                    "original_email": account["name"],
+                }
+                base = f"sub2api-{_safe_download_part(account.get('name'))}"
+                filename = f"{base}.sub2api.json"
+                suffix = 2
+                while filename.lower() in used:
+                    filename = f"{base}-{suffix}.sub2api.json"
+                    suffix += 1
+                used.add(filename.lower())
+                bundle.writestr(filename, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
         return archive.getvalue(), "application/zip", f"sub2api-{len(rows)}-accounts.zip"
 
     payloads = [_cpa_payload(record) for record in rows]
