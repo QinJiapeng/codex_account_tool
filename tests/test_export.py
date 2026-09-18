@@ -60,6 +60,7 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
     assert account["credentials"]["refresh_token"] == "oauth-refresh-secret"
     assert account["credentials"]["email"] == "user@example.com"
     assert account["extra"]["email_key"] == "user_example_com"
+    assert account["credentials"]["client_id"] == service.DEFAULT_CODEX_CLIENT_ID
     assert account["priority"] == 1
     assert "mail-password" not in content.decode("latin1")
 
@@ -78,9 +79,10 @@ def test_sub2api_export_contains_keypickup_compatible_jwt_claims():
         "email": "user@example.com",
         "https://api.openai.com/auth": {
             "chatgpt_account_id": "acct-jwt",
-            "chatgpt_user_id": "user-jwt",
+            "poid": "org-jwt",
             "chatgpt_plan_type": "plus",
         },
+        "sub": "user-jwt",
     })
     record["token"]["id_token"] = token({"email": "user@example.com"})
     content, _, _ = service.build_export_document([record], "sub2api")
@@ -88,6 +90,7 @@ def test_sub2api_export_contains_keypickup_compatible_jwt_claims():
         account = json.loads(archive.read(archive.namelist()[0]))["accounts"][0]
     assert account["credentials"]["chatgpt_account_id"] == "acct-jwt"
     assert account["credentials"]["chatgpt_user_id"] == "user-jwt"
+    assert account["credentials"]["organization_id"] == "org-jwt"
     assert account["credentials"]["expires_at"] == "2100-01-01T00:00:00Z"
     assert account["credentials"]["plan_type"] == "plus"
 

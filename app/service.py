@@ -179,6 +179,8 @@ def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
         or access_auth.get("user_id")
         or id_auth.get("chatgpt_user_id")
         or id_auth.get("user_id")
+        or access_payload.get("sub")
+        or id_payload.get("sub")
         or ""
     ).strip()
     email = str(
@@ -219,9 +221,25 @@ def _sub2api_account(record: Mapping[str, Any]) -> dict[str, Any]:
     plan_type = access_auth.get("chatgpt_plan_type") or id_auth.get("chatgpt_plan_type")
     if plan_type:
         credentials["plan_type"] = str(plan_type)
-    organization_id = id_auth.get("organization_id") or access_auth.get("organization_id")
+    organization_id = (
+        id_auth.get("organization_id")
+        or access_auth.get("organization_id")
+        or id_auth.get("poid")
+        or access_auth.get("poid")
+    )
+    if not organization_id:
+        for auth in (id_auth, access_auth):
+            organizations = auth.get("organizations")
+            if isinstance(organizations, list):
+                preferred = next((item for item in organizations if isinstance(item, Mapping) and item.get("is_default") and item.get("id")), None)
+                organization_id = (preferred or next((item for item in organizations if isinstance(item, Mapping) and item.get("id")), {})).get("id")
+                if organization_id:
+                    break
     if organization_id:
         credentials["organization_id"] = str(organization_id)
+    if payload.get("refresh_token"):
+        # Sub2API uses this client ID when it refreshes an imported OAuth token.
+        credentials["client_id"] = DEFAULT_CODEX_CLIENT_ID
     updated_at = str(record.get("token_updated_at") or "").strip()
     last_refresh = _iso_expiry(updated_at) or now.isoformat().replace("+00:00", "Z")
     extra: dict[str, Any] = {
