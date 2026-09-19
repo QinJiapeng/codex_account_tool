@@ -15,10 +15,10 @@ End If
 
 command = Quote(powershellPath) & _
     " -NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File " & _
-    Quote(fileSystem.BuildPath(scriptDirectory, "run.ps1"))
+    Quote(fileSystem.BuildPath(scriptDirectory, "run.ps1")) & " -Launch"
 
-' Window style 0 keeps both this launcher and PowerShell hidden. Waiting for
-' run.ps1 lets us report startup failures without leaving a console open.
+' The helper stays hidden. It opens the service console only on the first run;
+' later runs signal that existing console to restart its child service.
 exitCode = shell.Run(command, 0, True)
 If exitCode <> 0 Then
     MsgBox "Service startup failed. Run run.ps1 -Foreground for details.", _

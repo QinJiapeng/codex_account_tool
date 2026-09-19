@@ -1,12 +1,92 @@
 ﻿[CmdletBinding()]
 param(
-    # Default mode starts the service in the background. Use -Foreground to
-    # keep Uvicorn attached to the current shell for troubleshooting.
-    [switch]$Foreground
+    # -Launch opens the single visible console on the first invocation and
+    # sends later restart requests to that console. -Foreground runs the
+    # console supervisor itself. Default mode keeps background compatibility.
+    [switch]$Foreground,
+    [switch]$Launch
 )
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
+
+$restartEventName = "Local\CodexAccountToolRestart"
+$supervisorMutexName = "Local\CodexAccountToolSupervisor"
+$launchMutexName = "Local\CodexAccountToolConsoleLaunch"
+
+function Open-RestartEvent {
+    try {
+        return [System.Threading.EventWaitHandle]::OpenExisting($restartEventName)
+    }
+    catch [System.Threading.WaitHandleCannotBeOpenedException] {
+        return $null
+    }
+}
+
+function Send-RestartSignal {
+    $eventHandle = Open-RestartEvent
+    if (-not $eventHandle) {
+        return $false
+    }
+    try {
+        $null = $eventHandle.Set()
+        return $true
+    }
+    finally {
+        $eventHandle.Dispose()
+    }
+}
+
+if ($Launch) {
+    if ($Foreground) {
+        throw "Launch 和 Foreground 不能同时使用"
+    }
+
+    # Serialize the small gap between opening the console and the supervisor
+    # publishing its restart event, so rapid double-clicks still open once.
+    $launchMutex = New-Object System.Threading.Mutex($false, $launchMutexName)
+    $hasLaunchMutex = $false
+    try {
+        try {
+            $hasLaunchMutex = $launchMutex.WaitOne(10000)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $hasLaunchMutex = $true
+        }
+        if (-not $hasLaunchMutex) {
+            throw "等待现有启动请求超时"
+        }
+
+        if (Send-RestartSignal) {
+            exit 0
+        }
+
+        $batchPath = Join-Path $PSScriptRoot "start.bat"
+        $cmdPath = Join-Path $env:SystemRoot "System32\cmd.exe"
+        $cmdArguments = '/d /c ""{0}""' -f $batchPath
+        $consoleProcess = Start-Process -FilePath $cmdPath -ArgumentList $cmdArguments -WorkingDirectory $PSScriptRoot -WindowStyle Normal -PassThru
+
+        $deadline = (Get-Date).AddSeconds(10)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+            $eventHandle = Open-RestartEvent
+            if ($eventHandle) {
+                $eventHandle.Dispose()
+                exit 0
+            }
+            if ($consoleProcess.HasExited) {
+                exit $consoleProcess.ExitCode
+            }
+        }
+        throw "服务控制台未能在 10 秒内完成初始化"
+    }
+    finally {
+        if ($hasLaunchMutex) {
+            $launchMutex.ReleaseMutex()
+        }
+        $launchMutex.Dispose()
+    }
+}
 
 $python = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $python)) {
@@ -68,6 +148,141 @@ function Stop-ProjectService($processInfo) {
     throw ("旧服务（PID {0}）未能在 10 秒内退出，未启动新服务。" -f $servicePid)
 }
 
+function Start-ForegroundSupervisor {
+    $supervisorMutex = New-Object System.Threading.Mutex($false, $supervisorMutexName)
+    $hasSupervisorMutex = $false
+    $restartEvent = $null
+    $startedProcess = $null
+    try {
+        try {
+            $hasSupervisorMutex = $supervisorMutex.WaitOne(0)
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $hasSupervisorMutex = $true
+        }
+        if (-not $hasSupervisorMutex) {
+            if (Send-RestartSignal) {
+                Write-Host "已通知原服务窗口重新启动。"
+                return 0
+            }
+            throw "服务窗口正在初始化，请稍后再试"
+        }
+
+        $createdNew = $false
+        $restartEvent = [System.Threading.EventWaitHandle]::new(
+            $false,
+            [System.Threading.EventResetMode]::AutoReset,
+            $restartEventName,
+            [ref]$createdNew
+        )
+        if (-not $createdNew) {
+            throw "无法创建服务窗口重启事件"
+        }
+
+        Write-Host "此窗口负责运行 Codex Account Tool，请保持窗口开启。"
+        Write-Host "以后再次运行桌面快捷方式，服务会在本窗口中重新启动。"
+
+        while ($true) {
+            $existing = Get-ListeningProcess
+            if ($existing) {
+                if (Test-ProjectService $existing) {
+                    Stop-ProjectService $existing
+                }
+                else {
+                    throw ("端口 {0} 已被其他进程占用（PID {1}），未启动新服务。" -f $portNumber, $existing.ProcessId)
+                }
+            }
+
+            Write-Host "正在启动服务……"
+            $startedProcess = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -NoNewWindow -PassThru
+            $deadline = (Get-Date).AddSeconds(15)
+            $listener = $null
+            $restartPending = $false
+            while ((Get-Date) -lt $deadline) {
+                if ($restartEvent.WaitOne(0)) {
+                    $restartPending = $true
+                }
+                Start-Sleep -Milliseconds 200
+                $listener = Get-ListeningProcess
+                if ($listener -or $startedProcess.HasExited) {
+                    break
+                }
+            }
+            if (-not $listener) {
+                if ($startedProcess.HasExited) {
+                    $processExitCode = $startedProcess.ExitCode
+                    if ($processExitCode -eq 0) {
+                        return 0
+                    }
+                    throw ("服务进程已退出，退出代码：{0}" -f $processExitCode)
+                }
+                throw "服务启动失败，15 秒内未监听端口 $portNumber"
+            }
+            if (-not (Test-ProjectService $listener)) {
+                throw ("端口 {0} 被其他进程占用，未启动新服务。" -f $portNumber)
+            }
+
+            Set-Content -LiteralPath $pidFile -Value ([string]$listener.ProcessId) -Encoding ascii
+            Write-Host ("服务已启动：http://{0}:{1}    PID：{2}" -f $hostName, $portNumber, $listener.ProcessId)
+
+            if ($restartPending) {
+                Write-Host "收到新的启动请求，正在本窗口中重新启动。"
+                Stop-ProjectService $listener
+                continue
+            }
+
+            $restartRequested = $false
+            while (-not $startedProcess.HasExited) {
+                if ($restartEvent.WaitOne(250)) {
+                    $restartRequested = $true
+                    break
+                }
+            }
+            if (-not $restartRequested) {
+                $processExitCode = $startedProcess.ExitCode
+                if ($processExitCode -eq 0) {
+                    return 0
+                }
+                throw ("服务进程已退出，退出代码：{0}" -f $processExitCode)
+            }
+
+            Write-Host "收到新的启动请求，正在本窗口中重新启动。"
+            $listener = Get-ListeningProcess
+            if ($listener -and (Test-ProjectService $listener)) {
+                Stop-ProjectService $listener
+            }
+        }
+    }
+    finally {
+        if ($startedProcess -and -not $startedProcess.HasExited) {
+            Stop-Process -Id $startedProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+        if ($restartEvent) {
+            $restartEvent.Dispose()
+        }
+        if ($hasSupervisorMutex) {
+            $supervisorMutex.ReleaseMutex()
+        }
+        $supervisorMutex.Dispose()
+    }
+}
+
+# The working directory is already the project root, so avoid passing the
+# path as an unquoted command-line argument (important when the project is
+# cloned into a directory whose name contains spaces).
+$arguments = @("-m", "uvicorn", "app.main:app", "--host", $hostName, "--port", [string]$portNumber, "--no-access-log")
+
+if ($Foreground) {
+    exit (Start-ForegroundSupervisor)
+}
+
+# Keep command-line launches compatible with the single-console behavior when
+# the supervisor is already active.
+if (Send-RestartSignal) {
+    Write-Host "已通知原服务窗口重新启动。"
+    exit 0
+}
+
 # A named mutex prevents two nearly simultaneous launches from both passing
 # the port check before either newly started process begins listening.
 $mutex = New-Object System.Threading.Mutex($false, "Local\CodexAccountToolStartup")
@@ -86,15 +301,6 @@ try {
         } else {
             throw ("端口 {0} 已被其他进程占用（PID {1}），未启动新服务。" -f $portNumber, $existing.ProcessId)
         }
-    }
-
-    # The working directory is already the project root, so avoid passing the
-    # path as an unquoted command-line argument (important when the project is
-    # cloned into a directory whose name contains spaces).
-    $arguments = @("-m", "uvicorn", "app.main:app", "--host", $hostName, "--port", [string]$portNumber)
-    if ($Foreground) {
-        & $python @arguments
-        exit $LASTEXITCODE
     }
 
     $process = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
