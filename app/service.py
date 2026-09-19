@@ -1417,13 +1417,16 @@ class ScheduledLivenessService:
             http_status = int(result.get("http_status") or 0)
         except (TypeError, ValueError, OverflowError):
             http_status = 0
-        return {
+        normalized = {
             "account_id": str(row.get("account_id") or ""),
             "success": bool(result.get("success")),
+            "terminal": bool(result.get("terminal")) or liveness_failure_is_terminal(result),
             "status": str(result.get("status") or ""),
             "http_status": http_status,
             "error_code": str(result.get("error_code") or ""),
         }
+        self.repository.save_liveness_result(str(row.get("account_id") or ""), normalized)
+        return normalized
 
     async def run_once(self, account_ids: list[str] | None = None) -> dict[str, Any]:
         if self._run_lock.locked():

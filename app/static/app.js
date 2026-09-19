@@ -256,10 +256,24 @@ function accountStatusDisplay(account, activity = "") {
   return `<span class="account-status account-status-${tone}"${title}>${escapeHtml(statusLabels[status] || "待处理")}</span>`;
 }
 
-function tokenStatusDisplay(hasToken) {
-  return hasToken
-    ? `<span class="token-status token-status-saved">已保存</span>`
-    : `<span class="token-status token-status-empty">未保存</span>`;
+function livenessStatusDisplay(account) {
+  if (!account.has_token) return `<span class="liveness-status liveness-unknown">未授权</span>`;
+  const status = String(account.liveness_status || "unknown").toLowerCase();
+  const labels = {
+    valid: "有效",
+    invalid: "已失效",
+    forbidden: "权限受限",
+    rate_limited: "限流",
+    temporary_failed: "临时失败",
+    unknown: "未验活",
+  };
+  const tone = ["valid", "invalid", "forbidden", "rate_limited", "temporary_failed", "unknown"].includes(status) ? status : "unknown";
+  const details = [
+    account.liveness_checked_at ? `检查于 ${account.liveness_checked_at}` : "",
+    account.liveness_http_status ? `HTTP ${account.liveness_http_status}` : "",
+    account.liveness_error_code || "",
+  ].filter(Boolean).join(" · ");
+  return `<span class="liveness-status liveness-${tone}"${details ? ` title="${escapeHtml(details)}"` : ""}>${labels[tone]}</span>`;
 }
 
 function applySettings(data = {}) {
@@ -485,7 +499,7 @@ function renderAccountTable() {
       : `<span class="plan-badge plan-unknown">未识别</span>`;
     const emailCell = `<div class="account-email">${escapeHtml(account.email)}</div><div class="account-plan">${planBadge}</div>`;
     const selectedClass = selectedAccounts.has(id) ? " is-selected" : "";
-    return `<tr class="account-row${selectedClass}" data-account-id="${escapeHtml(id)}"><td><input type="checkbox" class="account-check" data-id="${escapeHtml(id)}" aria-label="选择 ${escapeHtml(account.email)}" ${selectedAccounts.has(id) ? "checked" : ""}></td><td class="account-email-cell">${emailCell}</td><td class="account-status-cell">${accountStatusDisplay(account, accountActivity(id))}</td><td>${tokenStatusDisplay(account.has_token)}</td><td class="upload-status-cell">${uploadStatusDisplay(account)}</td><td>${quotaBadge}</td><td class="quota-limit-cell">${quotaLimitDisplay(quota)}</td></tr>`;
+    return `<tr class="account-row${selectedClass}" data-account-id="${escapeHtml(id)}"><td><input type="checkbox" class="account-check" data-id="${escapeHtml(id)}" aria-label="选择 ${escapeHtml(account.email)}" ${selectedAccounts.has(id) ? "checked" : ""}></td><td class="account-email-cell">${emailCell}</td><td class="account-status-cell">${accountStatusDisplay(account, accountActivity(id))}</td><td>${livenessStatusDisplay(account)}</td><td class="upload-status-cell">${uploadStatusDisplay(account)}</td><td>${quotaBadge}</td><td class="quota-limit-cell">${quotaLimitDisplay(quota)}</td></tr>`;
   }).join("") || `<tr><td colspan="7"><div class="account-empty">${query ? "没有匹配的账号" : "暂无账号，请先点击“导入账号”"}</div></td></tr>`;
   document.querySelectorAll(".account-check").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const id = String(checkbox.dataset.id || "");

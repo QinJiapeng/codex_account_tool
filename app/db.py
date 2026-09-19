@@ -22,6 +22,10 @@ CREATE TABLE IF NOT EXISTS accounts (
     status TEXT NOT NULL DEFAULT 'pending',
     last_error TEXT NOT NULL DEFAULT '',
     last_authorized_at TEXT,
+    liveness_status TEXT NOT NULL DEFAULT 'unknown',
+    liveness_checked_at TEXT,
+    liveness_http_status INTEGER NOT NULL DEFAULT 0,
+    liveness_error_code TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -165,6 +169,15 @@ class Database:
             proxy_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(proxies)").fetchall()}
             if "last_claim_at" not in proxy_columns:
                 connection.execute("ALTER TABLE proxies ADD COLUMN last_claim_at REAL NOT NULL DEFAULT 0")
+            account_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(accounts)").fetchall()}
+            if "liveness_status" not in account_columns:
+                connection.execute("ALTER TABLE accounts ADD COLUMN liveness_status TEXT NOT NULL DEFAULT 'unknown'")
+            if "liveness_checked_at" not in account_columns:
+                connection.execute("ALTER TABLE accounts ADD COLUMN liveness_checked_at TEXT")
+            if "liveness_http_status" not in account_columns:
+                connection.execute("ALTER TABLE accounts ADD COLUMN liveness_http_status INTEGER NOT NULL DEFAULT 0")
+            if "liveness_error_code" not in account_columns:
+                connection.execute("ALTER TABLE accounts ADD COLUMN liveness_error_code TEXT NOT NULL DEFAULT ''")
             # Preserve previously observed deactivated accounts as a distinct
             # state after upgrading.  Older versions stored every authorization
             # error as ``failed``, which caused these terminal accounts to be
@@ -333,6 +346,10 @@ class Repository:
             "status": str(row["status"]),
             "last_error": str(row["last_error"] or ""),
             "last_authorized_at": row["last_authorized_at"] or "",
+            "liveness_status": str(row["liveness_status"] or "unknown"),
+            "liveness_checked_at": row["liveness_checked_at"] or "",
+            "liveness_http_status": int(row["liveness_http_status"] or 0),
+            "liveness_error_code": str(row["liveness_error_code"] or ""),
             "has_token": bool(row.get("has_token", 0) if isinstance(row, dict) else row["has_token"]),
             "updated_at": row["updated_at"],
         }
@@ -669,7 +686,47 @@ class Repository:
                 """,
                 (str(account_id),),
             )
+            connection.execute(
+                """
+                UPDATE accounts
+                   SET liveness_status='unknown', liveness_checked_at=NULL,
+                       liveness_http_status=0, liveness_error_code='', updated_at=?
+                 WHERE id=?
+                """,
+                (now, str(account_id)),
+            )
         self.update_account(account_id, status="success", error="", authorized=True)
+
+    def save_liveness_result(self, account_id: str, result: Mapping[str, Any]) -> None:
+        """Persist a safe per-account liveness outcome without credentials."""
+
+        try:
+            http_status = max(0, int(result.get("http_status") or 0))
+        except (TypeError, ValueError, OverflowError):
+            http_status = 0
+        if bool(result.get("success")):
+            status = "valid"
+        elif bool(result.get("terminal")) or http_status == 401 or str(result.get("status") or "").lower() in {"invalid", "unauthorized"}:
+            status = "invalid"
+        else:
+            raw_status = str(result.get("status") or "temporary_failed").strip().lower()
+            status = raw_status if raw_status in {"forbidden", "rate_limited"} else "temporary_failed"
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                UPDATE accounts
+                   SET liveness_status=?, liveness_checked_at=?,
+                       liveness_http_status=?, liveness_error_code=?
+                 WHERE id=?
+                """,
+                (
+                    status,
+                    utc_now(),
+                    http_status,
+                    str(result.get("error_code") or "")[:100],
+                    str(account_id),
+                ),
+            )
 
     def token_rows(self, account_ids: Sequence[int | str] | None = None) -> list[dict[str, Any]]:
         with self.db.connect() as connection:

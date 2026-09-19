@@ -692,6 +692,7 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="account-table"' in html
     assert 'id="reauthConnectionMode"' in html
     assert 'class="account-action-label">账号操作' in html
+    assert "验活状态" in html
     assert 'class="account-action-label">导出与上传' in html
     assert 'id="forceUpload"' in html
     assert 'id="clearDisabledAccounts"' in html

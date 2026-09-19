@@ -169,6 +169,11 @@ async def test_scheduled_liveness_queues_only_invalid_tokens_without_overwriting
     assert state["checked_count"] == 6
     assert state["invalid_count"] == 2
     assert state["temporary_failed_count"] == 3
+    account_items, _ = repository.list_accounts()
+    states = {item["email"]: item["liveness_status"] for item in account_items}
+    assert states["valid@example.com"] == "valid"
+    assert states["unauthorized@example.com"] == "invalid"
+    assert states["limited@example.com"] == "rate_limited"
 
 
 @pytest.mark.asyncio
