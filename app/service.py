@@ -23,11 +23,12 @@ from app.protocol.auth_flow import AuthFlow
 from app.protocol.config import Config as ProtocolConfig
 from app.oauth.codex_validator import create_codex_token_validator
 from app.oauth.codex_usage import create_codex_usage_client
-from app.proxy import ProxyLease, ProxyPool, redact_proxy
+from app.proxy import ProxyLease, ProxyPool, ProxyPoolError, redact_proxy
 
 
 logger = logging.getLogger(__name__)
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+REAUTH_RETRY_DELAYS_SECONDS = (1.0, 3.0)
 
 
 class UploadConfigError(RuntimeError):
@@ -611,10 +612,13 @@ async def upload_sub2api_records(
                 raise RuntimeError(f"Sub2API 账号查询失败（HTTP {lookup.status_code}）")
 
             for account_id in existing_ids:
+                update_payload: dict[str, Any] = {"credentials": account["credentials"]}
+                if normalized_group_id is not None:
+                    update_payload["group_ids"] = [normalized_group_id]
                 update = await client.put(
                     f"{accounts_endpoint}/{account_id}",
                     headers=headers,
-                    content=json.dumps({"credentials": account["credentials"]}, ensure_ascii=False).encode("utf-8"),
+                    content=json.dumps(update_payload, ensure_ascii=False).encode("utf-8"),
                 )
                 if update.status_code < 200 or update.status_code >= 300:
                     raise RuntimeError(f"Sub2API 账号更新失败（HTTP {update.status_code}）")
@@ -700,6 +704,64 @@ def account_is_disabled_error(value: Any) -> bool:
         "account disabled",
         "has been deleted or deactivated",
     ))
+
+
+def reauth_error_is_retryable(value: Any) -> bool:
+    """Return whether an authorization error is likely to be transient.
+
+    Full protocol login is safe to retry only for transport/upstream capacity
+    failures.  Explicit account, password, region, and mailbox OAuth errors
+    remain terminal so an automatic retry cannot hide a credential problem.
+    """
+
+    if account_is_disabled_error(value):
+        return False
+    if isinstance(value, OutlookMailError):
+        return not value.terminal
+    if isinstance(value, ProxyPoolError):
+        return value.code in {"PROXY_POOL_EMPTY", "PROXY_POOL_BUSY"}
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    terminal_markers = (
+        "unsupported_country_region_territory",
+        "invalid_grant",
+        "invalid_client",
+        "unauthorized_client",
+        "interaction_required",
+        "consent_required",
+        "invalid_login",
+        "invalid_credentials",
+        "incorrect_password",
+        "wrong_password",
+        "password is incorrect",
+        "未提供真实密码",
+    )
+    if any(marker in text for marker in terminal_markers):
+        return False
+    if re.search(r"\bhttp\s*(?:403|408|409|425|429|500|502|503|504|520|521|522|523|524)\b", text):
+        return True
+    transient_markers = (
+        "timeout",
+        "timed out",
+        "超时",
+        "network",
+        "connection",
+        "disconnected",
+        "reset by peer",
+        "proxy error",
+        "tls",
+        "ssl",
+        "连接",
+        "temporarily unavailable",
+        "temporary failure",
+        "rate_limit",
+        "rate limit",
+        "代理池当前没有可用代理",
+        "代理池竞争失败",
+    )
+    return any(marker in text for marker in transient_markers)
 
 
 def parse_four_segment_line(value: str) -> dict[str, str] | None:
@@ -900,16 +962,77 @@ class ReauthService:
             self.repository.add_event(job_id, "warning", message)
             return
         use_proxy = bool(job["use_proxy"])
-        self.repository.update_job(
-            job_id,
-            status="running",
-            proxy_state="requested" if use_proxy else "direct",
-            proxy_endpoint="",
-            current_step="proxy" if use_proxy else "login",
-            started_at=utc_now(),
-            error="",
-        )
-        self.repository.update_account(account["id"], status="running", error="")
+        retry_count = len(REAUTH_RETRY_DELAYS_SECONDS)
+        max_attempts = retry_count + 1
+        started_at = utc_now()
+        for attempt in range(max_attempts):
+            self.repository.update_job(
+                job_id,
+                status="running",
+                proxy_state="requested" if use_proxy else "direct",
+                proxy_endpoint="",
+                current_step="proxy" if use_proxy else "login",
+                started_at=started_at,
+                error="",
+            )
+            self.repository.update_account(account["id"], status="running", error="")
+            try:
+                await self._run_attempt(job_id, worker_index, account, use_proxy)
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                error_message = safe_error(error)
+                retryable = reauth_error_is_retryable(error)
+                if retryable and attempt < retry_count:
+                    delay = float(REAUTH_RETRY_DELAYS_SECONDS[attempt])
+                    retry_number = attempt + 2
+                    self.repository.update_job(
+                        job_id,
+                        status="pending",
+                        current_step="queued",
+                        proxy_state="requested" if use_proxy else "direct",
+                        proxy_endpoint="",
+                        error="",
+                        finished_at=None,
+                    )
+                    self.repository.add_event(
+                        job_id,
+                        "warning",
+                        f"授权暂时失败：{error_message or '未知临时错误'}，{delay:g} 秒后自动重试（第 {retry_number}/{max_attempts} 次）",
+                    )
+                    await asyncio.sleep(delay)
+                    account = self.repository.get_account(str(account["id"])) or account
+                    continue
+
+                account_disabled = account_is_disabled_error(error)
+                changes: dict[str, Any] = {
+                    "status": "failed",
+                    "current_step": "finished",
+                    "error": error_message,
+                    "finished_at": utc_now(),
+                }
+                if use_proxy and isinstance(error, ProxyPoolError):
+                    changes["proxy_state"] = "failed"
+                self.repository.update_job(job_id, **changes)
+                self.repository.update_account(
+                    account["id"],
+                    status="disabled" if account_disabled else "failed",
+                    error=error_message,
+                )
+                event_prefix = "检测到账号已禁用" if account_disabled else "重新授权失败"
+                self.repository.add_event(job_id, "error", f"{event_prefix}：{error_message}")
+                return
+
+    async def _run_attempt(
+        self,
+        job_id: str,
+        worker_index: int,
+        account: dict[str, Any],
+        use_proxy: bool,
+    ) -> None:
+        """Run one authorization attempt and release its proxy lease."""
+
         lease: ProxyLease | None = None
         success = False
         error_message = ""
@@ -933,24 +1056,10 @@ class ReauthService:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            account_disabled = account_is_disabled_error(error)
             error_message = safe_error(error)
-            changes: dict[str, Any] = {
-                "status": "failed",
-                "current_step": "finished",
-                "error": error_message,
-                "finished_at": utc_now(),
-            }
             if use_proxy and lease is None:
-                changes["proxy_state"] = "failed"
-            self.repository.update_job(job_id, **changes)
-            self.repository.update_account(
-                account["id"],
-                status="disabled" if account_disabled else "failed",
-                error=error_message,
-            )
-            event_prefix = "检测到账号已禁用" if account_disabled else "重新授权失败"
-            self.repository.add_event(job_id, "error", f"{event_prefix}：{error_message}")
+                self.repository.update_job(job_id, proxy_state="failed")
+            raise
         finally:
             if lease:
                 with contextlib.suppress(Exception):

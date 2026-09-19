@@ -2,10 +2,11 @@ from pathlib import Path
 
 import pytest
 
+import app.service as service_module
 from app.config import Settings
 from app.db import Database, Repository
 from app.proxy import ProxyLease, ProxyPoolError
-from app.service import ReauthService, account_is_disabled_error
+from app.service import ReauthService, account_is_disabled_error, reauth_error_is_retryable
 
 
 def _settings(data_dir: Path) -> Settings:
@@ -71,6 +72,28 @@ class DeactivatedReauthService(ReauthService):
         )
 
 
+class TransientThenSuccessReauthService(ReauthService):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = 0
+
+    def _reauthorize_sync(self, account: dict[str, object], proxy_url: str, job_id: str) -> dict[str, str]:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("协议登录请求失败: HTTP 503")
+        return {
+            "email": str(account["email"]),
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+        }
+
+
+def test_reauth_error_retry_classification():
+    assert reauth_error_is_retryable(RuntimeError("登录请求失败: HTTP 503")) is True
+    assert reauth_error_is_retryable(RuntimeError("登录失败: invalid_login")) is False
+    assert reauth_error_is_retryable(RuntimeError("account_deactivated")) is False
+
+
 @pytest.mark.asyncio
 async def test_reauth_job_exposes_only_the_proxy_endpoint_after_claim(tmp_path: Path):
     repository = Repository(Database(tmp_path / "tool.db"))
@@ -97,10 +120,11 @@ async def test_reauth_job_exposes_only_the_proxy_endpoint_after_claim(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_reauth_job_marks_proxy_as_not_claimed_when_pool_is_empty(tmp_path: Path):
+async def test_reauth_job_marks_proxy_as_not_claimed_when_pool_is_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     repository = Repository(Database(tmp_path / "tool.db"))
     repository.db.initialize()
     account = _account(repository)
+    monkeypatch.setattr(service_module, "REAUTH_RETRY_DELAYS_SECONDS", (0.0, 0.0))
     service = ReauthService(repository, _settings(tmp_path), FakeProxyPool(fail=True))  # type: ignore[arg-type]
     job = repository.create_job(str(account["id"]), True)
     try:
@@ -114,6 +138,29 @@ async def test_reauth_job_marks_proxy_as_not_claimed_when_pool_is_empty(tmp_path
     assert stored["proxy_state"] == "failed"
     assert stored["proxy_endpoint"] == ""
     assert stored["error"] == "代理池当前没有可用代理"
+
+
+@pytest.mark.asyncio
+async def test_reauth_retries_transient_failure_before_marking_account_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(service_module, "REAUTH_RETRY_DELAYS_SECONDS", (0.0, 0.0))
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    account = _account(repository)
+    proxy_pool = FakeProxyPool()
+    service = TransientThenSuccessReauthService(repository, _settings(tmp_path), proxy_pool)  # type: ignore[arg-type]
+    job = repository.create_job(str(account["id"]), True)
+    try:
+        await service._run(str(job["id"]), 0)
+    finally:
+        await service.stop()
+
+    stored = repository.get_job(str(job["id"]))
+    assert stored and stored["status"] == "success"
+    assert service.calls == 2
+    assert proxy_pool.completed[0][0] is False
+    assert proxy_pool.completed[-1] == (True, "")
+    events = " ".join(item["message"] for item in repository.list_events(str(job["id"])))
+    assert "自动重试" in events
 
 
 @pytest.mark.asyncio
