@@ -675,9 +675,10 @@ class Repository:
                   id_token=excluded.id_token, payload_json=excluded.payload_json, updated_at=excluded.updated_at
                 """, (str(account_id), email, access, refresh, safe["id_token"], json.dumps(safe, ensure_ascii=False, separators=(",", ":")), now, now)
             )
-            # A refreshed OAuth token must be uploaded again.  Keep the rows so
-            # the UI can show a pending state, but invalidate the old success
-            # markers for both destinations atomically with the token update.
+            # A refreshed OAuth token must be uploaded again. Keep the rows so
+            # the UI can show a pending state. The successful OAuth exchange
+            # also establishes a valid token; later model-list validation may
+            # replace this optimistic state with a more specific result.
             connection.execute(
                 """
                 UPDATE account_uploads
@@ -689,7 +690,7 @@ class Repository:
             connection.execute(
                 """
                 UPDATE accounts
-                   SET liveness_status='unknown', liveness_checked_at=NULL,
+                   SET liveness_status='valid', liveness_checked_at=NULL,
                        liveness_http_status=0, liveness_error_code='', updated_at=?
                  WHERE id=?
                 """,

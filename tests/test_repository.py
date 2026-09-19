@@ -19,7 +19,7 @@ def test_account_list_does_not_return_credentials(tmp_path: Path):
     assert "mailbox_refresh_token" not in items[0]
 
 
-def test_account_list_exposes_liveness_state_and_token_refresh_resets_it(tmp_path: Path):
+def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tmp_path: Path):
     database = Database(tmp_path / "liveness.db")
     database.initialize()
     repository = Repository(database)
@@ -36,6 +36,10 @@ def test_account_list_exposes_liveness_state_and_token_refresh_resets_it(tmp_pat
         "access_token": "access-token",
         "refresh_token": "refresh-token",
     })
+    initial = repository.list_accounts()[0][0]
+    assert initial["liveness_status"] == "valid"
+    assert initial["liveness_checked_at"] == ""
+
     repository.save_liveness_result(account["id"], {
         "success": True,
         "status": "valid",
@@ -52,7 +56,7 @@ def test_account_list_exposes_liveness_state_and_token_refresh_resets_it(tmp_pat
         "refresh_token": "refresh-token-rotated",
     })
     refreshed = repository.list_accounts()[0][0]
-    assert refreshed["liveness_status"] == "unknown"
+    assert refreshed["liveness_status"] == "valid"
     assert refreshed["liveness_checked_at"] == ""
 
 
