@@ -89,13 +89,13 @@ th { color: #667085; font-weight: 600; }
 #consolePanel { caret-color: transparent; }
 #consolePanel .account-list-header,
 #consolePanel .account-list-toolbar,
-#consolePanel .account-list-results,
-#consolePanel .account-table-wrap,
 #consolePanel .account-pagination,
 #consolePanel .quota-overview,
 #consolePanel .quota-tiers,
 #consolePanel .scheduler-workbench-card,
 #consolePanel .jobs-card { cursor: default; user-select: none; }
+#consolePanel .account-list-results,
+#consolePanel .account-table-wrap { cursor: text; user-select: text; -webkit-user-select: text; }
 #consolePanel #accountSearch, #consolePanel #accountPage { cursor: text; user-select: text; caret-color: auto; }
 .account-list-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 18px 13px; }
 .account-list-badges { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; }
