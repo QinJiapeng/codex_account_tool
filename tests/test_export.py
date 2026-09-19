@@ -306,9 +306,7 @@ async def test_sub2api_existing_account_group_update(monkeypatch):
 
         async def post(self, url, **kwargs):
             calls.append(("POST", url, kwargs))
-            response = _FakeResponse(200)
-            response.text = 'data: {"type":"test_complete","success":true}\n\n'
-            return response
+            return _FakeResponse(200, {"code": 0, "message": "success", "data": {"status": "normal"}})
 
     monkeypatch.setenv("SUB2API_API_URL", "https://sub2api.example")
     monkeypatch.setenv("SUB2API_ADMIN_API_KEY", "admin-secret")

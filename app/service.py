@@ -535,13 +535,20 @@ def _sub2api_created_ids(data: Any, email: str) -> list[str]:
 
 
 def _sub2api_test_result(response: Any) -> tuple[bool, int, bool, bool, str]:
-    """Interpret the admin account-test SSE response without retaining its body."""
+    """Interpret SSE/JSON account-test responses without retaining secrets.
+
+    Sub2API versions differ here: some stream ``test_complete`` events while
+    others return the normal ``code/message/data`` envelope or only acknowledge
+    the asynchronous test with a 2xx response.  Only an explicit error or
+    non-2xx response should make an otherwise successful upload fail.
+    """
 
     status = int(getattr(response, "status_code", 0) or 0)
     if status < 200 or status >= 300:
         return False, status, False, False, ""
     text = str(getattr(response, "text", "") or "")
     saw_complete = False
+    complete_success = False
     saw_error = False
     error_message = ""
     for line in text.splitlines():
@@ -558,8 +565,46 @@ def _sub2api_test_result(response: Any) -> tuple[bool, int, bool, bool, str]:
             saw_error = True
             error_message = safe_error(event.get("error") or event.get("message") or "")
         if str(event.get("type") or "").strip().lower() == "test_complete":
-            saw_complete = bool(event.get("success"))
-    return saw_complete and not saw_error, status, saw_complete, saw_error, error_message
+            saw_complete = True
+            complete_success = bool(event.get("success"))
+    if saw_error:
+        return False, status, saw_complete, True, error_message
+    if saw_complete:
+        return complete_success, status, True, False, error_message
+
+    payload: Any = None
+    if text.strip():
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+    if payload is None:
+        try:
+            parser = getattr(response, "json", None)
+            payload = parser() if callable(parser) else None
+        except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+            payload = None
+    if isinstance(payload, Mapping):
+        code = payload.get("code")
+        if code is not None and str(code).strip().lower() not in {"0", "200", "success"}:
+            return False, status, False, True, safe_error(payload.get("message") or payload.get("error") or "")
+        if payload.get("success") is False or payload.get("valid") is False:
+            return False, status, False, True, safe_error(payload.get("message") or payload.get("error") or "")
+        data = payload.get("data")
+        if isinstance(data, Mapping):
+            for key in ("success", "valid", "healthy", "ok"):
+                if key in data and data.get(key) is not None:
+                    return bool(data.get(key)), status, False, not bool(data.get(key)), safe_error(data.get("message") or data.get("error") or "")
+            state = str(data.get("status") or data.get("state") or "").strip().lower()
+            if state in {"failed", "error", "invalid", "unhealthy", "offline"}:
+                return False, status, False, True, safe_error(data.get("message") or data.get("error") or state)
+            if state in {"success", "valid", "healthy", "normal", "active", "ready"}:
+                return True, status, False, False, ""
+        return True, status, False, False, ""
+
+    # A 2xx response with no explicit failure means the remote test was
+    # accepted, even when that Sub2API version completes it asynchronously.
+    return True, status, False, False, ""
 
 
 async def upload_sub2api_records(
