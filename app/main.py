@@ -539,6 +539,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job["events"] = request.app.state.repository.list_events(job_id)
         return job
 
+    @application.post("/api/liveness/run")
+    async def run_liveness_now(request: Request) -> dict[str, Any]:
+        """Run one immediate Token liveness check, optionally for selected accounts."""
+
+        body = await json_body(request)
+        try:
+            return await request.app.state.scheduler.run_once(ids_from_body(body))
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=safe_error(error)) from error
+
     @application.get("/api/quotas")
     async def list_quotas(request: Request, limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0)) -> dict[str, Any]:
         items, total = request.app.state.repository.list_quotas(limit, offset)

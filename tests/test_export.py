@@ -10,7 +10,7 @@ from app.config import Settings
 from app import service
 from app.db import Database, Repository
 from app.main import create_app
-from app.service import QuotaService, ReauthService
+from app.service import QuotaService, ReauthService, ScheduledLivenessService
 
 
 def _jwt(payload):
@@ -628,6 +628,38 @@ def test_api_status_filter_and_targeted_retry_routes(tmp_path: Path, monkeypatch
         assert repository.get_account(failed["id"]) is not None
 
 
+def test_manual_liveness_route_accepts_selected_accounts(tmp_path: Path, monkeypatch):
+    settings = Settings(
+        host="127.0.0.1",
+        port=10717,
+        data_dir=tmp_path,
+        worker_count=1,
+        use_proxy_default=False,
+        proxy_lease_seconds=60,
+        proxy_cooldown_seconds=5,
+        outlook_imap_host="outlook.example",
+        outlook_imap_port=993,
+        otp_poll_seconds=2,
+        otp_timeout_seconds=30,
+        quota_timeout_ms=1000,
+        usage_url="https://usage.example",
+        usage_version="test",
+    )
+    calls: list[list[str] | None] = []
+
+    async def fake_run_once(self, account_ids=None):
+        calls.append(account_ids)
+        return {"status": "success", "checked": len(account_ids or []), "valid": 1, "invalid": 0, "temporary_failed": 0, "queued": 0}
+
+    monkeypatch.setattr(ScheduledLivenessService, "run_once", fake_run_once)
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/liveness/run", json={"ids": ["account-1", "account-2"]})
+
+    assert response.status_code == 200
+    assert response.json()["checked"] == 2
+    assert calls == [["account-1", "account-2"]]
+
+
 def test_authorization_workbench_contains_import_dialog_and_no_separate_account_tab():
     html = Path("app/static/index.html").read_text(encoding="utf-8")
     script = Path("app/static/app.js").read_text(encoding="utf-8")
@@ -663,6 +695,7 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="account-action-label">导出与上传' in html
     assert 'id="forceUpload"' in html
     assert 'id="clearDisabledAccounts"' in html
+    assert 'id="livenessSelected"' in html
     assert '<option value="disabled">已禁用</option>' in html
     assert '/api/accounts/disabled' in script
     assert "强制重传" in html
@@ -672,6 +705,7 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert "已使用代理" in script
     assert "代理未领取成功" in script
     assert '/api/quotas/progress' in script
+    assert '/api/liveness/run' in script
     assert 'class="card jobs-card"' in html
     assert 'id="jobStats"' in html
     assert 'scheduler-workbench-card' in html

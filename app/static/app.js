@@ -55,6 +55,9 @@ const operationState = {
   reauthIds: new Set(),
   reauthTargetCount: 0,
   targetedReauthBusy: false,
+  livenessBusy: false,
+  livenessIds: new Set(),
+  livenessTargetCount: 0,
   quotaBusy: false,
   quotaIds: new Set(),
   quotaTargetCount: 0,
@@ -545,33 +548,40 @@ function updateAccountSelectionState() {
   $("quotaSelected").textContent = operationState.quotaBusy
     ? `刷新中（${operationState.quotaTargetCount}）`
     : count ? `刷新选中额度（${count}）` : "查询全部额度";
+  $("livenessSelected").textContent = operationState.livenessBusy
+    ? `验活中（${operationState.livenessTargetCount}）`
+    : count ? `验活选中（${count}）` : "一键验活";
   const reauthButton = $("reauthSelected");
+  const livenessButton = $("livenessSelected");
   const quotaButton = $("quotaSelected");
-  reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
-  quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  livenessButton.disabled = !hasAccounts || operationState.livenessBusy || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   reauthButton.classList.toggle("is-busy", operationState.reauthBusy);
+  livenessButton.classList.toggle("is-busy", operationState.livenessBusy);
   quotaButton.classList.toggle("is-busy", operationState.quotaBusy);
   reauthButton.setAttribute("aria-busy", String(operationState.reauthBusy));
+  livenessButton.setAttribute("aria-busy", String(operationState.livenessBusy));
   quotaButton.setAttribute("aria-busy", String(operationState.quotaBusy));
   const retryReauthButton = $("retryFailedReauth");
   const retryQuotaButton = $("retryFailedQuota");
   if (retryReauthButton) {
-    retryReauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+    retryReauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
     retryReauthButton.classList.toggle("is-busy", operationState.targetedReauthBusy);
     retryReauthButton.setAttribute("aria-busy", String(operationState.targetedReauthBusy));
   }
   if (retryQuotaButton) {
-    retryQuotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.cleanupDisabledBusy;
+    retryQuotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.livenessBusy || operationState.targetedQuotaBusy || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.cleanupDisabledBusy;
     retryQuotaButton.classList.toggle("is-busy", operationState.targetedQuotaBusy);
     retryQuotaButton.setAttribute("aria-busy", String(operationState.targetedQuotaBusy));
   }
   const cleanupDisabledButton = $("clearDisabledAccounts");
   if (cleanupDisabledButton) {
-    cleanupDisabledButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+    cleanupDisabledButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
     cleanupDisabledButton.classList.toggle("is-busy", operationState.cleanupDisabledBusy);
     cleanupDisabledButton.setAttribute("aria-busy", String(operationState.cleanupDisabledBusy));
   }
-  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
 }
 
 async function refreshData({showError = true} = {}) {
@@ -788,6 +798,34 @@ async function runAccountAction(path) {
   }
 }
 
+async function runLivenessAction() {
+  if (operationState.livenessBusy) return;
+  const selected = selectedAccounts.size > 0;
+  const ids = selected ? [...selectedAccounts] : [];
+  const targetCount = selected ? ids.length : accountAuthorizedTotal;
+  operationState.livenessBusy = true;
+  operationState.livenessIds = new Set(ids);
+  operationState.livenessTargetCount = targetCount;
+  updateAccountSelectionState();
+  setAccountResult("actionResult", `正在验活 ${targetCount} 个账号，请稍候…`);
+  try {
+    const result = await api("/api/liveness/run", {method: "POST", body: JSON.stringify(selected ? {ids} : {})});
+    if (result.skipped && result.status === "running") {
+      setAccountResult("actionResult", "已有验活任务正在执行，请稍候再试");
+    } else {
+      setAccountResult("actionResult", `验活完成：检查 ${result.checked || 0} 个，有效 ${result.valid || 0} 个，失效 ${result.invalid || 0} 个，临时失败 ${result.temporary_failed || 0} 个，加入重新授权 ${result.queued || 0} 个`);
+    }
+    await refreshData();
+  } catch (error) {
+    setAccountResult("actionResult", error.message);
+  } finally {
+    operationState.livenessBusy = false;
+    operationState.livenessIds.clear();
+    operationState.livenessTargetCount = 0;
+    updateAccountSelectionState();
+  }
+}
+
 async function runTargetedAccountAction(path, label) {
   const isReauth = path === "/api/reauth/retry-failed";
   const busyKey = isReauth ? "targetedReauthBusy" : "targetedQuotaBusy";
@@ -815,6 +853,7 @@ async function runTargetedAccountAction(path, label) {
 }
 
 $("reauthSelected").onclick = () => runAccountAction("/api/reauth/queue").catch((error) => { setAccountResult("actionResult", error.message); });
+$("livenessSelected").onclick = () => runLivenessAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedReauth").onclick = () => runTargetedAccountAction("/api/reauth/retry-failed", "重新授权失败账号");
 $("retryFailedQuota").onclick = () => runTargetedAccountAction("/api/quotas/refresh-failed", "查询失败额度账号");

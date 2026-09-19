@@ -1425,7 +1425,7 @@ class ScheduledLivenessService:
             "error_code": str(result.get("error_code") or ""),
         }
 
-    async def run_once(self) -> dict[str, Any]:
+    async def run_once(self, account_ids: list[str] | None = None) -> dict[str, Any]:
         if self._run_lock.locked():
             return {"status": "running", "skipped": True}
         async with self._run_lock:
@@ -1445,7 +1445,7 @@ class ScheduledLivenessService:
                 last_error="",
             )
             try:
-                rows = self.repository.token_rows()
+                rows = self.repository.token_rows(account_ids)
                 concurrency = min(20, max(1, int(self.settings.worker_count)))
                 semaphore = asyncio.Semaphore(concurrency)
 
