@@ -28,6 +28,7 @@ class _SessionClient:
 def _flow_with_session(payload):
     flow = AuthFlow(Config())
     flow.session = _SessionClient(payload)
+    flow.result.device_id = "test-device"
     flow._build_chatgpt_cookie_header = lambda: ""
     flow._extract_session_cookie = lambda: "session-cookie"
     return flow
@@ -59,3 +60,39 @@ def test_web_session_access_token_is_used_without_oauth_refresh_token():
     flow.get_auth_session()
 
     assert flow.result.access_token == "web-session-access"
+
+
+def test_session_dump_does_not_replace_codex_oauth_access_token():
+    flow = _flow_with_session({
+        "client_auth_session": {
+            "access_token": "web-session-access",
+        },
+    })
+    flow.result.access_token = "codex-oauth-access"
+    flow.result.refresh_token = "codex-oauth-refresh"
+    flow.result.id_token = "codex-oauth-id"
+
+    flow.fetch_client_auth_session_dump("test")
+
+    assert flow.result.access_token == "codex-oauth-access"
+    assert flow.result.refresh_token == "codex-oauth-refresh"
+    assert flow.result.id_token == "codex-oauth-id"
+
+
+def test_session_dump_replaces_oauth_credentials_only_as_a_pair():
+    flow = _flow_with_session({
+        "client_auth_session": {
+            "access_token": "new-oauth-access",
+            "refresh_token": "new-oauth-refresh",
+            "id_token": "new-oauth-id",
+        },
+    })
+    flow.result.access_token = "old-oauth-access"
+    flow.result.refresh_token = "old-oauth-refresh"
+    flow.result.id_token = "old-oauth-id"
+
+    flow.fetch_client_auth_session_dump("test")
+
+    assert flow.result.access_token == "new-oauth-access"
+    assert flow.result.refresh_token == "new-oauth-refresh"
+    assert flow.result.id_token == "new-oauth-id"

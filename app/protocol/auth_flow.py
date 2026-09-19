@@ -572,15 +572,22 @@ class AuthFlow:
                 logger.info("client_auth_session_dump 捕获 verifier: key=%s len=%s", key, len(v))
                 break
 
-        # token 候选（极少见，但若有直接收下）
+        # Token 候选（极少见，但若有只能按同一来源的成对凭据处理）。
+        # 该接口也可能返回网页 Session access_token；如果此时已有
+        # Codex OAuth refresh_token，单独覆盖 access_token 会再次制造
+        # “网页 access_token + OAuth refresh_token”的混合凭据，最终在
+        # Sub2API 验活时表现为 token_revoked。
         refresh = (found.get("refresh_token", "") or found.get("oauth_refresh_token", "")).strip()
-        if refresh:
-            self.result.refresh_token = refresh
         acc = (found.get("access_token", "") or "").strip()
-        if acc:
+        if acc and refresh:
             self.result.access_token = acc
+            self.result.refresh_token = refresh
+        elif acc and not self.result.refresh_token:
+            self.result.access_token = acc
+        elif refresh and not self.result.access_token:
+            self.result.refresh_token = refresh
         idt = (found.get("id_token", "") or "").strip()
-        if idt:
+        if idt and (acc and refresh or not self.result.has_codex_oauth_credentials()):
             self.result.id_token = idt
 
         logger.debug(
