@@ -21,20 +21,62 @@ function Open-RestartEvent {
     catch [System.Threading.WaitHandleCannotBeOpenedException] {
         return $null
     }
+    catch [System.UnauthorizedAccessException] {
+        return $null
+    }
 }
 
 function Send-RestartSignal {
-    $eventHandle = Open-RestartEvent
-    if (-not $eventHandle) {
-        return $false
-    }
-    try {
-        $null = $eventHandle.Set()
-        return $true
-    }
-    finally {
-        $eventHandle.Dispose()
-    }
+    param(
+        [int]$TimeoutMilliseconds = 0
+    )
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMilliseconds)
+    do {
+        $eventHandle = Open-RestartEvent
+        if ($eventHandle) {
+            try {
+                $null = $eventHandle.Set()
+                return $true
+            }
+            finally {
+                $eventHandle.Dispose()
+            }
+        }
+        if ($TimeoutMilliseconds -le 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Wait-ForRestartEvent {
+    param([int]$TimeoutMilliseconds = 10000)
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMilliseconds)
+    do {
+        $eventHandle = Open-RestartEvent
+        if ($eventHandle) {
+            $eventHandle.Dispose()
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    return $false
+}
+
+function Send-RestartSignalWithRetry {
+    param([int]$TimeoutMilliseconds = 10000)
+
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if (Send-RestartSignal) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+    return $false
 }
 
 if ($Launch) {
@@ -57,7 +99,7 @@ if ($Launch) {
             throw "等待现有启动请求超时"
         }
 
-        if (Send-RestartSignal) {
+        if (Send-RestartSignalWithRetry) {
             exit 0
         }
 
@@ -69,9 +111,7 @@ if ($Launch) {
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline) {
             Start-Sleep -Milliseconds 100
-            $eventHandle = Open-RestartEvent
-            if ($eventHandle) {
-                $eventHandle.Dispose()
+            if (Wait-ForRestartEvent) {
                 exit 0
             }
             if ($consoleProcess.HasExited) {
@@ -161,7 +201,10 @@ function Start-ForegroundSupervisor {
             $hasSupervisorMutex = $true
         }
         if (-not $hasSupervisorMutex) {
-            if (Send-RestartSignal) {
+            # The existing console may be between acquiring the mutex and
+            # creating its event. Wait through that short initialization gap
+            # instead of reporting a false startup failure.
+            if (Send-RestartSignalWithRetry) {
                 Write-Host "已通知原服务窗口重新启动。"
                 return 0
             }
@@ -278,7 +321,7 @@ if ($Foreground) {
 
 # Keep command-line launches compatible with the single-console behavior when
 # the supervisor is already active.
-if (Send-RestartSignal) {
+if (Send-RestartSignalWithRetry) {
     Write-Host "已通知原服务窗口重新启动。"
     exit 0
 }
