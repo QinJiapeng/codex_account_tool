@@ -2294,7 +2294,15 @@ class AuthFlow:
         if session_token:
             self.result.session_token = session_token
         if access_token:
-            self.result.access_token = access_token
+            # A Codex OAuth exchange returns a refreshable access/refresh pair.
+            # The web session endpoint can expose a different, short-lived
+            # session access token.  Once a refresh token is present, replacing
+            # the OAuth access token here would leave Sub2API/CLIProxyAPI with
+            # credentials from two different token families and make the pair
+            # fail validation.  Keep the OAuth access token in that case while
+            # still recording the session token and cookie state.
+            if not self.result.refresh_token:
+                self.result.access_token = access_token
         self.result.cookie_header = self._build_chatgpt_cookie_header()
 
         _log = logger.info if first_call else logger.debug
