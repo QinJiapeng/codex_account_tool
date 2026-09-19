@@ -85,6 +85,7 @@
             <div class="upload-setting-title"><h4 id="sub2ApiUploadSettingsTitle">Sub2API</h4><span id="settingSub2ApiStatus" class="soft-pill">未配置</span></div>
             <label><span>服务地址</span><input id="settingSub2ApiUrl" type="url" maxlength="2048" placeholder="https://sub2api.example.com" autocomplete="url"><small>可填写服务根地址，也可填写完整的批量上传地址。</small></label>
             <label><span>管理员 API Key</span><input id="settingSub2ApiKey" type="password" maxlength="512" placeholder="请输入管理员 API Key" autocomplete="new-password"><small>留空会保留已保存的密钥。</small><small>获取路径：管理后台 → 系统设置 → 安全 → 管理员 API Key。请使用 <code>admin-</code> 开头的管理员 Key。</small></label>
+            <label><span>默认分组 ID（可选）</span><input id="settingSub2ApiGroupId" type="number" min="1" step="1" placeholder="留空不指定分组"><small>填写 Sub2API 中已有分组的 ID；新上传和重新上传都会同步到该分组。</small></label>
             <div class="upload-setting-footer"><label><span>超时（秒）</span><input id="settingSub2ApiTimeout" type="number" min="1" max="120" step="1" value="30"></label></div>
           </section>
         </div>

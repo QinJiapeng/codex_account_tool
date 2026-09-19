@@ -45,6 +45,7 @@ class Settings:
     sub2api_api_url: str = ""
     sub2api_admin_api_key: str = ""
     sub2api_api_timeout_seconds: int = 30
+    sub2api_group_id: int = 0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -88,6 +89,7 @@ class Settings:
                 os.getenv("SUB2API_ADMIN_API_KEY") or os.getenv("SUB2API_API_KEY") or ""
             ).strip(),
             sub2api_api_timeout_seconds=_int("SUB2API_API_TIMEOUT_SECONDS", 30, 1),
+            sub2api_group_id=_int("SUB2API_GROUP_ID", 0, 0),
         )
 
     @property

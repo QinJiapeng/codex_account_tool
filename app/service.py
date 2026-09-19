@@ -567,8 +567,9 @@ async def upload_sub2api_records(
     api_url: str | None = None,
     admin_api_key: str | None = None,
     timeout_seconds: int | float | None = None,
+    group_id: int | None = None,
 ) -> dict[str, Any]:
-    """Upload all authorized records to the Sub2API admin batch endpoint."""
+    """Upload authorized records, optionally assigning them to one group."""
 
     import httpx
 
@@ -578,6 +579,18 @@ async def upload_sub2api_records(
     endpoint, _ = _sub2api_endpoint(api_url)
     key = _sub2api_key(admin_api_key)
     accounts = [_sub2api_account(record, require_jwt=True) for record in rows]
+    normalized_group_id: int | None = None
+    if group_id is not None:
+        if isinstance(group_id, bool) or isinstance(group_id, float) and not group_id.is_integer():
+            raise UploadConfigError("Sub2API 分组 ID 必须是正整数")
+        try:
+            normalized_group_id = int(group_id)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise UploadConfigError("Sub2API 分组 ID 必须是正整数") from error
+        if normalized_group_id <= 0 or normalized_group_id > 9_223_372_036_854_775_807:
+            raise UploadConfigError("Sub2API 分组 ID 必须是正整数")
+        for account in accounts:
+            account["group_ids"] = [normalized_group_id]
     body = {"accounts": accounts}
     try:
         raw_timeout = os.getenv("SUB2API_API_TIMEOUT_SECONDS", "30") if timeout_seconds is None else timeout_seconds
@@ -1111,6 +1124,7 @@ class ReauthService:
                         api_url=self.settings.sub2api_api_url,
                         admin_api_key=self.settings.sub2api_admin_api_key,
                         timeout_seconds=self.settings.sub2api_api_timeout_seconds,
+                        group_id=self.settings.sub2api_group_id or None,
                     )
                     result = merge_upload_skip_result(result, skipped)
                 self.repository.save_upload_statuses("sub2api", records, result)

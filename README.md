@@ -184,9 +184,10 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 
 - Sub2API 服务地址；
 - 管理员 API Key；
+- 可选的默认分组 ID（需提前在 Sub2API 中创建分组）；
 - 请求超时时间。
 
-保存后可以手动上传，也可以开启“授权成功后自动上传 Sub2API”。
+保存后可以手动上传，也可以开启“授权成功后自动上传 Sub2API”。填写分组 ID 后，新上传和重新上传的账号都会挂到该分组；留空则不指定分组。一个账号是否最终属于多个分组，以 Sub2API 的分组设置为准。
 
 自动上传失败不会回滚本地已保存的授权结果。账号列表会分别记录 CPA 和 Sub2API 的未上传、已上传或失败状态。
 
@@ -226,6 +227,7 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 | `SUB2API_API_URL` | 空 | Sub2API 服务地址 |
 | `SUB2API_ADMIN_API_KEY` | 空 | Sub2API 管理员 API Key |
 | `SUB2API_API_TIMEOUT_SECONDS` | `30` | Sub2API 请求超时 |
+| `SUB2API_GROUP_ID` | 空 | 可选的默认 Sub2API 分组 ID |
 
 上传地址、管理员密码或密钥既可以写入 `.env`，也可以通过网页“设置”保存。网页保存值会进入本地数据库，接口只返回“是否已配置”，不会回显密码和密钥。未配置对应地址和凭据时，不会向远端发送请求，自动上传任务会记录配置错误。
 

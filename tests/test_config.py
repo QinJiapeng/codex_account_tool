@@ -21,5 +21,6 @@ def test_project_defaults_match_shared_settings(monkeypatch, tmp_path: Path):
     assert settings.use_proxy_default is True
     assert settings.auto_upload_cpa is True
     assert settings.auto_upload_sub2api is False
+    assert settings.sub2api_group_id == 0
     assert settings.scheduled_liveness_enabled is True
     assert settings.scheduled_liveness_interval_minutes == 5

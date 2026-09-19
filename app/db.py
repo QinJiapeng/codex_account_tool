@@ -199,6 +199,7 @@ class Repository:
         "sub2api_api_url",
         "sub2api_admin_api_key",
         "sub2api_api_timeout_seconds",
+        "sub2api_group_id",
     }
 
     def __init__(self, database: Database):
@@ -526,6 +527,22 @@ class Repository:
                     """,
                     (account_id, normalized_platform, status, now, uploaded_at, "" if uploaded else item_error),
                 )
+
+    def reset_upload_statuses(self, platform: str) -> None:
+        """Mark all rows for a platform as pending after its remote target changes."""
+
+        normalized_platform = str(platform or "").strip().lower()
+        if normalized_platform not in {"cpa", "sub2api"}:
+            raise ValueError("不支持的上传平台")
+        with self.db.connect() as connection:
+            connection.execute(
+                """
+                UPDATE account_uploads
+                   SET status='pending', last_attempt_at='', uploaded_at=NULL, error=''
+                 WHERE platform=?
+                """,
+                (normalized_platform,),
+            )
 
     def successful_upload_account_ids(self, platform: str, account_ids: Sequence[str]) -> set[str]:
         """Return account IDs already uploaded successfully to one platform.

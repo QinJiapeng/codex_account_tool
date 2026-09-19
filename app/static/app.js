@@ -278,6 +278,7 @@ function applySettings(data = {}) {
   $("settingSub2ApiUrl").value = String(settings.sub2api_api_url || "");
   $("settingSub2ApiKey").value = "";
   $("settingSub2ApiKey").placeholder = settings.sub2api_admin_api_key_configured ? "已配置，留空保持不变" : "请输入管理员 API Key";
+  $("settingSub2ApiGroupId").value = settings.sub2api_group_id ? String(settings.sub2api_group_id) : "";
   $("settingSub2ApiTimeout").value = String(settings.sub2api_api_timeout_seconds || 30);
   $("settingSub2ApiStatus").textContent = settings.sub2api_api_url && settings.sub2api_admin_api_key_configured ? "可上传" : settings.sub2api_api_url ? "缺少密钥" : "未配置";
   $("schedulerState").textContent = scheduler.running ? "执行中" : scheduler.enabled ? "已启用" : "已关闭";
@@ -894,6 +895,11 @@ $("saveSettings").onclick = async () => {
     if (!Number.isInteger(cpaTimeout) || cpaTimeout < 1 || cpaTimeout > 120 || !Number.isInteger(sub2apiTimeout) || sub2apiTimeout < 1 || sub2apiTimeout > 120) {
       throw new Error("上传超时必须是 1 到 120 的整数");
     }
+    const sub2apiGroupIdRaw = $("settingSub2ApiGroupId").value.trim();
+    const sub2apiGroupId = sub2apiGroupIdRaw === "" ? 0 : Number(sub2apiGroupIdRaw);
+    if (!Number.isSafeInteger(sub2apiGroupId) || sub2apiGroupId < 0) {
+      throw new Error("Sub2API 分组 ID 必须是正整数或留空");
+    }
     const result = await api("/api/settings", {
       method: "PATCH",
       body: JSON.stringify({
@@ -910,6 +916,7 @@ $("saveSettings").onclick = async () => {
         sub2api_api_url: $("settingSub2ApiUrl").value.trim(),
         sub2api_admin_api_key: $("settingSub2ApiKey").value.trim(),
         sub2api_api_timeout_seconds: sub2apiTimeout,
+        sub2api_group_id: sub2apiGroupId,
       }),
     });
     applySettings(result);

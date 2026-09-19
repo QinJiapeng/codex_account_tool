@@ -87,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sub2api_api_url": config.sub2api_api_url,
             "sub2api_admin_api_key": config.sub2api_admin_api_key,
             "sub2api_api_timeout_seconds": config.sub2api_api_timeout_seconds,
+            "sub2api_group_id": config.sub2api_group_id,
         })
         config.use_proxy_default = bool(preferences.get("use_proxy_default", config.use_proxy_default))
         config.auto_upload_cpa = bool(preferences.get("auto_upload_cpa", config.auto_upload_cpa))
@@ -102,11 +103,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             config.scheduled_liveness_interval_minutes = min(10_080, max(5, int(preferences.get("scheduled_liveness_interval_minutes", config.scheduled_liveness_interval_minutes))))
             config.cpa_api_timeout_seconds = min(120, max(1, int(preferences.get("cpa_api_timeout_seconds", config.cpa_api_timeout_seconds))))
             config.sub2api_api_timeout_seconds = min(120, max(1, int(preferences.get("sub2api_api_timeout_seconds", config.sub2api_api_timeout_seconds))))
+            config.sub2api_group_id = max(0, int(preferences.get("sub2api_group_id", config.sub2api_group_id)))
         except (TypeError, ValueError):
             config.worker_count = min(32, max(1, int(config.worker_count)))
             config.scheduled_liveness_interval_minutes = min(10_080, max(5, int(config.scheduled_liveness_interval_minutes)))
             config.cpa_api_timeout_seconds = min(120, max(1, int(config.cpa_api_timeout_seconds)))
             config.sub2api_api_timeout_seconds = min(120, max(1, int(config.sub2api_api_timeout_seconds)))
+            config.sub2api_group_id = max(0, int(config.sub2api_group_id))
         proxy_pool = ProxyPool(database, lease_seconds=config.proxy_lease_seconds, cooldown_seconds=config.proxy_cooldown_seconds)
         proxy_pool.load_from_environment()
         reauth = ReauthService(repository, config, proxy_pool)
@@ -235,6 +238,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "sub2api_api_url": settings.sub2api_api_url,
                 "sub2api_admin_api_key_configured": bool(settings.sub2api_admin_api_key),
                 "sub2api_api_timeout_seconds": int(settings.sub2api_api_timeout_seconds),
+                "sub2api_group_id": int(settings.sub2api_group_id),
             },
             "scheduler": request.app.state.scheduler.get_status(),
             "restart_required": int(settings.worker_count) != int(reauth.worker_count),
@@ -296,6 +300,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return ""
             return current
 
+        def read_group_id(name: str, current: int) -> int:
+            if name not in body:
+                return current
+            value = body[name]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                return 0
+            if isinstance(value, bool):
+                raise HTTPException(status_code=422, detail=f"{name} 必须是正整数或留空")
+            if isinstance(value, float) and not value.is_integer():
+                raise HTTPException(status_code=422, detail=f"{name} 必须是正整数或留空")
+            try:
+                group_id = int(value)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise HTTPException(status_code=422, detail=f"{name} 必须是正整数或留空") from error
+            if group_id < 0 or group_id > 9_223_372_036_854_775_807:
+                raise HTTPException(status_code=422, detail=f"{name} 必须是正整数或留空")
+            return group_id
+
         use_proxy_default = read_bool("use_proxy_default", bool(settings.use_proxy_default))
         auto_upload_cpa = read_bool("auto_upload_cpa", bool(settings.auto_upload_cpa))
         auto_upload_sub2api = read_bool("auto_upload_sub2api", bool(settings.auto_upload_sub2api))
@@ -307,6 +329,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sub2api_api_url = read_url("sub2api_api_url", settings.sub2api_api_url, "Sub2API")
         sub2api_admin_api_key = read_secret("sub2api_admin_api_key", "clear_sub2api_admin_api_key", settings.sub2api_admin_api_key, "Sub2API 管理员 API Key")
         sub2api_api_timeout_seconds = read_timeout("sub2api_api_timeout_seconds", settings.sub2api_api_timeout_seconds)
+        sub2api_group_id = read_group_id("sub2api_group_id", int(settings.sub2api_group_id))
+        previous_sub2api_group_id = int(settings.sub2api_group_id)
         worker_count = int(settings.worker_count)
         if "worker_count" in body:
             value = body["worker_count"]
@@ -343,6 +367,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.sub2api_api_url = sub2api_api_url
         settings.sub2api_admin_api_key = sub2api_admin_api_key
         settings.sub2api_api_timeout_seconds = sub2api_api_timeout_seconds
+        settings.sub2api_group_id = sub2api_group_id
         saved_preferences = {
             "use_proxy_default": use_proxy_default,
             "auto_upload_cpa": auto_upload_cpa,
@@ -357,8 +382,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "sub2api_api_url": sub2api_api_url,
             "sub2api_admin_api_key": sub2api_admin_api_key,
             "sub2api_api_timeout_seconds": sub2api_api_timeout_seconds,
+            "sub2api_group_id": sub2api_group_id,
         }
         request.app.state.repository.save_preferences(saved_preferences)
+        if sub2api_group_id != previous_sub2api_group_id:
+            request.app.state.repository.reset_upload_statuses("sub2api")
         request.app.state.preferences.update(saved_preferences)
         request.app.state.scheduler.notify_configuration_changed()
         restart_required = worker_count != reauth.worker_count
@@ -378,6 +406,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "sub2api_api_url": sub2api_api_url,
                 "sub2api_admin_api_key_configured": bool(sub2api_admin_api_key),
                 "sub2api_api_timeout_seconds": sub2api_api_timeout_seconds,
+                "sub2api_group_id": sub2api_group_id,
             },
             "scheduler": request.app.state.scheduler.get_status(),
             "restart_required": restart_required,
@@ -461,6 +490,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     api_url=settings.sub2api_api_url,
                     admin_api_key=settings.sub2api_admin_api_key,
                     timeout_seconds=settings.sub2api_api_timeout_seconds,
+                    group_id=settings.sub2api_group_id or None,
                 )
                 result = merge_upload_skip_result(result, skipped)
             else:

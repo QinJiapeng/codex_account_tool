@@ -268,6 +268,60 @@ async def test_sub2api_upload_sends_batch_accounts_without_echoing_auth_header(m
 
 
 @pytest.mark.asyncio
+async def test_sub2api_upload_assigns_configured_group(monkeypatch):
+    _FakeAsyncClient.calls = []
+    monkeypatch.setenv("SUB2API_API_URL", "https://sub2api.example")
+    monkeypatch.setenv("SUB2API_ADMIN_API_KEY", "admin-secret")
+    monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
+
+    result = await service.upload_sub2api_records([_sub2api_record()], group_id=3)
+
+    assert result["uploaded"] == 1
+    _, kwargs = next(item for item in _FakeAsyncClient.calls if item[1].get("method") != "GET")
+    body = json.loads(kwargs["content"])
+    assert body["accounts"][0]["group_ids"] == [3]
+
+
+@pytest.mark.asyncio
+async def test_sub2api_existing_account_group_update(monkeypatch):
+    calls = []
+
+    class ExistingAccountClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            calls.append(("GET", url, kwargs))
+            return _FakeResponse(200, {"data": {"items": [{"id": 42, "name": "user@example.com"}]}})
+
+        async def put(self, url, **kwargs):
+            calls.append(("PUT", url, kwargs))
+            return _FakeResponse(200)
+
+        async def post(self, url, **kwargs):
+            calls.append(("POST", url, kwargs))
+            response = _FakeResponse(200)
+            response.text = 'data: {"type":"test_complete","success":true}\n\n'
+            return response
+
+    monkeypatch.setenv("SUB2API_API_URL", "https://sub2api.example")
+    monkeypatch.setenv("SUB2API_ADMIN_API_KEY", "admin-secret")
+    monkeypatch.setattr("httpx.AsyncClient", ExistingAccountClient)
+
+    result = await service.upload_sub2api_records([_sub2api_record()], group_id=3)
+
+    assert result["uploaded"] == 1
+    update_body = json.loads(calls[1][2]["content"])
+    assert update_body["group_ids"] == [3]
+
+
+@pytest.mark.asyncio
 async def test_sub2api_upload_updates_existing_account_and_validates_it(monkeypatch):
     calls = []
 
@@ -414,6 +468,7 @@ def test_api_list_hides_credentials_and_export_is_explicit(tmp_path: Path, monke
             "sub2api_api_url": "https://sub2api.example",
             "sub2api_admin_api_key": "sub2api-secret",
             "sub2api_api_timeout_seconds": 50,
+            "sub2api_group_id": 3,
         })
         assert updated_settings.status_code == 200
         assert updated_settings.json()["settings"]["auto_upload_cpa"] is True
@@ -423,6 +478,7 @@ def test_api_list_hides_credentials_and_export_is_explicit(tmp_path: Path, monke
         assert updated_settings.json()["settings"]["cpa_api_url"] == "https://cpa.example/management.html"
         assert updated_settings.json()["settings"]["cpa_management_key_configured"] is True
         assert updated_settings.json()["settings"]["sub2api_admin_api_key_configured"] is True
+        assert updated_settings.json()["settings"]["sub2api_group_id"] == 3
         assert "management-secret" not in updated_settings.text
         assert "sub2api-secret" not in updated_settings.text
         assert updated_settings.json()["restart_required"] is True
@@ -430,6 +486,7 @@ def test_api_list_hides_credentials_and_export_is_explicit(tmp_path: Path, monke
         assert settings_view.status_code == 200
         assert "management-secret" not in settings_view.text
         assert "sub2api-secret" not in settings_view.text
+        assert 'id="settingSub2ApiGroupId"' in client.get("/").text
         assert client.patch("/api/settings", json={"cpa_api_url": "http://user:password@cpa.example"}).status_code == 422
         assert client.patch("/api/settings", json={"scheduled_liveness_interval_minutes": 4}).status_code == 422
         imported = client.post("/api/accounts/import", json={"text": "user@example.com----mail-password----client-id----mailbox-refresh-token"})
