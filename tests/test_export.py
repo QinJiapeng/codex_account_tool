@@ -717,6 +717,12 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'aria-busy' in script
     assert 'button.is-busy:disabled' in Path("app/static/styles.css").read_text(encoding="utf-8")
     styles = Path("app/static/styles.css").read_text(encoding="utf-8")
+    assert '.liveness-valid' in styles
+    assert '.liveness-invalid' in styles
+    assert '.liveness-forbidden' in styles
+    assert '.liveness-rate_limited' in styles
+    assert '.liveness-temporary_failed' in styles
+    assert '.liveness-unavailable' in styles
     assert '.quota-stat' in styles and 'cursor: default; user-select: none' in styles
     assert '#consolePanel .account-table-wrap' in styles and 'user-select: text; -webkit-user-select: text' in styles
     assert 'id="statLimitAccounts"' not in html

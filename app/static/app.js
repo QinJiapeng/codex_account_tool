@@ -257,7 +257,7 @@ function accountStatusDisplay(account, activity = "") {
 }
 
 function livenessStatusDisplay(account) {
-  if (!account.has_token) return `<span class="liveness-status liveness-unknown">未授权</span>`;
+  if (!account.has_token) return `<span class="liveness-status liveness-unavailable">未授权</span>`;
   const status = String(account.liveness_status || "unknown").toLowerCase();
   const labels = {
     valid: "有效",
