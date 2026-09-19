@@ -28,7 +28,9 @@ from app.proxy import ProxyLease, ProxyPool, ProxyPoolError, redact_proxy
 
 logger = logging.getLogger(__name__)
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-REAUTH_RETRY_DELAYS_SECONDS = (1.0, 3.0)
+# Four retries (five total attempts) absorb longer proxy/upstream turbulence
+# without retrying terminal account or credential errors.
+REAUTH_RETRY_DELAYS_SECONDS = (1.0, 3.0, 8.0, 15.0)
 
 
 class UploadConfigError(RuntimeError):
