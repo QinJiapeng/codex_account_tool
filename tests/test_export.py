@@ -314,6 +314,51 @@ async def test_sub2api_upload_updates_existing_account_and_validates_it(monkeypa
     assert "access_token" in calls[1][2]["content"].decode()
 
 
+@pytest.mark.asyncio
+async def test_sub2api_upload_creates_account_and_validates_new_id(monkeypatch):
+    calls = []
+
+    class NewAccountClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            calls.append(("GET", url, kwargs))
+            return _FakeResponse(200, {"data": {"items": []}})
+
+        async def post(self, url, **kwargs):
+            calls.append(("POST", url, kwargs))
+            response = _FakeResponse(201, {
+                "data": {"results": [{"id": 99, "name": "user@example.com", "success": True}]}
+            })
+            if url.endswith("/99/test"):
+                response.status_code = 200
+                response.text = 'data: {"type":"test_complete","success":true}\n\n'
+            return response
+
+    monkeypatch.setenv("SUB2API_API_URL", "https://sub2api.example")
+    monkeypatch.setenv("SUB2API_ADMIN_API_KEY", "admin-secret")
+    monkeypatch.setattr("httpx.AsyncClient", NewAccountClient)
+
+    result = await service.upload_sub2api_records([_sub2api_record()])
+
+    assert result["uploaded"] == 1
+    assert result["items"] == [{
+        "email": "user@example.com",
+        "uploaded": True,
+        "created": True,
+    }]
+    assert [method for method, _, _ in calls] == ["GET", "POST", "POST"]
+    assert calls[1][1] == "https://sub2api.example/api/v1/admin/accounts/batch"
+    assert calls[2][1] == "https://sub2api.example/api/v1/admin/accounts/99/test"
+
+
 def test_safe_error_redacts_credentials_and_tokens():
     value = service.safe_error("authorization: Bearer eyJabcdefghijk.abc.def api_key=secret refresh_token=refresh")
     assert "eyJabcdefghijk" not in value

@@ -511,6 +511,27 @@ def _sub2api_existing_ids(data: Any, email: str) -> list[str]:
     return list(dict.fromkeys(result))
 
 
+def _sub2api_created_ids(data: Any, email: str) -> list[str]:
+    """Extract successfully-created account IDs from a batch-create response."""
+
+    if isinstance(data, Mapping):
+        items = data.get("results") or data.get("items")
+    else:
+        items = data
+    if not isinstance(items, list):
+        return []
+    normalized_email = str(email or "").strip().lower()
+    result: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping) or item.get("success") is False:
+            continue
+        name = str(item.get("name") or item.get("email") or "").strip().lower()
+        account_id = str(item.get("id") or item.get("account_id") or "").strip()
+        if account_id and (not name or name == normalized_email):
+            result.append(account_id)
+    return list(dict.fromkeys(result))
+
+
 def _sub2api_test_result(response: Any) -> tuple[bool, int, bool, bool, str]:
     """Interpret the admin account-test SSE response without retaining its body."""
 
@@ -628,6 +649,25 @@ async def upload_sub2api_records(
             )
             if response.status_code < 200 or response.status_code >= 300:
                 raise RuntimeError(f"Sub2API 上传失败（HTTP {response.status_code}）")
+            # BatchCreate returns the new numeric IDs.  Validate them too;
+            # otherwise deleting an old duplicate and uploading again could
+            # appear successful while the newly-created account still holds a
+            # revoked OAuth token.
+            created_data = _sub2api_response_data(response)
+            for account in pending_create:
+                email = str(account.get("name") or "").strip().lower()
+                for account_id in _sub2api_created_ids(created_data, email):
+                    tested = await client.post(
+                        f"{accounts_endpoint}/{account_id}/test",
+                        headers=headers,
+                        content=json.dumps({"model_id": "gpt-5.6-luna", "prompt": "hi"}, ensure_ascii=False).encode("utf-8"),
+                    )
+                    valid, test_status, saw_complete, saw_error, test_error = _sub2api_test_result(tested)
+                    if not valid:
+                        suffix = f"：{test_error}" if test_error else ""
+                        raise RuntimeError(
+                            f"Sub2API 新账号验活失败（HTTP {test_status or '未知'}，完成事件={'有' if saw_complete else '无'}，错误事件={'有' if saw_error else '无'}）{suffix}，请重新授权后再上传"
+                        )
             created.extend(
                 {"email": str(account.get("name") or "").strip().lower(), "uploaded": True, "created": True}
                 for account in pending_create
