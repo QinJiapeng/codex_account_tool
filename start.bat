@@ -1,15 +1,16 @@
 @echo off
-setlocal
+setlocal EnableExtensions DisableDelayedExpansion
+chcp 65001 >nul
 cd /d "%~dp0"
 
 set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 
 "%PS_EXE%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0run.ps1" %*
-set "exitCode=%ERRORLEVEL%"
-echo.
-if not "%exitCode%"=="0" echo START FAILED. Exit code: %exitCode%
-if "%exitCode%"=="0" echo SERVICE STARTED OR RESTARTED.
-echo.
-pause
-endlocal & exit /b %exitCode%
+set "EXIT_CODE=%ERRORLEVEL%"
+if not "%EXIT_CODE%"=="0" (
+  echo.
+  echo 启动失败，退出代码：%EXIT_CODE%
+  pause
+)
+endlocal & exit /b %EXIT_CODE%
