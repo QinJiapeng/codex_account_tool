@@ -195,8 +195,12 @@ def test_repository_export_joins_only_authorized_accounts_and_uses_rotated_mail_
 
 
 class _FakeResponse:
-    def __init__(self, status_code=201):
+    def __init__(self, status_code=201, payload=None):
         self.status_code = status_code
+        self._payload = payload if payload is not None else {}
+
+    def json(self):
+        return self._payload
 
 
 class _FakeAsyncClient:
@@ -213,6 +217,14 @@ class _FakeAsyncClient:
 
     async def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
+        return _FakeResponse()
+
+    async def get(self, url, **kwargs):
+        self.calls.append((url, {"method": "GET", **kwargs}))
+        return _FakeResponse(200, {"code": 0, "data": {"items": [], "total": 0}})
+
+    async def put(self, url, **kwargs):
+        self.calls.append((url, {"method": "PUT", **kwargs}))
         return _FakeResponse()
 
 
@@ -244,7 +256,7 @@ async def test_sub2api_upload_sends_batch_accounts_without_echoing_auth_header(m
     result = await service.upload_sub2api_records([_sub2api_record()])
 
     assert result["uploaded"] == 1
-    url, kwargs = _FakeAsyncClient.calls[0]
+    url, kwargs = next((item for item in _FakeAsyncClient.calls if item[1].get("method") != "GET"), _FakeAsyncClient.calls[0])
     assert url == "https://sub2api.example/api/v1/admin/accounts/batch"
     assert kwargs["headers"]["X-API-Key"] == "admin-secret"
     assert "Authorization" not in kwargs["headers"]
@@ -253,6 +265,53 @@ async def test_sub2api_upload_sends_batch_accounts_without_echoing_auth_header(m
     assert body["accounts"][0]["name"] == "user@example.com"
     assert body["accounts"][0]["credentials"]["access_token"].count(".") == 2
     assert "mail-password" not in kwargs["content"].decode()
+
+
+@pytest.mark.asyncio
+async def test_sub2api_upload_updates_existing_account_and_validates_it(monkeypatch):
+    calls = []
+
+    class ExistingAccountClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            calls.append(("GET", url, kwargs))
+            return _FakeResponse(200, {"data": {"items": [{"id": 42, "name": "user@example.com"}]}})
+
+        async def put(self, url, **kwargs):
+            calls.append(("PUT", url, kwargs))
+            return _FakeResponse(200)
+
+        async def post(self, url, **kwargs):
+            calls.append(("POST", url, kwargs))
+            response = _FakeResponse(200)
+            response.text = 'data: {"type":"test_complete","success":true}\n\n'
+            return response
+
+    monkeypatch.setenv("SUB2API_API_URL", "https://sub2api.example")
+    monkeypatch.setenv("SUB2API_ADMIN_API_KEY", "admin-secret")
+    monkeypatch.setattr("httpx.AsyncClient", ExistingAccountClient)
+
+    result = await service.upload_sub2api_records([_sub2api_record()])
+
+    assert result["uploaded"] == 1
+    assert result["items"] == [{
+        "email": "user@example.com",
+        "uploaded": True,
+        "updated": True,
+        "validated": True,
+        "updated_accounts": 1,
+    }]
+    assert [method for method, _, _ in calls] == ["GET", "PUT", "POST"]
+    assert calls[1][1] == "https://sub2api.example/api/v1/admin/accounts/42"
+    assert "access_token" in calls[1][2]["content"].decode()
 
 
 def test_safe_error_redacts_credentials_and_tokens():

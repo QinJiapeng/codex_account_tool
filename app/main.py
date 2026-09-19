@@ -470,7 +470,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as error:
             repository.save_upload_statuses("sub2api", all_records, {"items": skipped}, error=safe_error(error))
             logger.warning("Sub2API 批量上传失败：%s", type(error).__name__)
-            raise HTTPException(status_code=502, detail="Sub2API 上传失败，请检查地址、密钥和网络") from error
+            raise HTTPException(status_code=502, detail=f"Sub2API 上传失败：{safe_error(error)}") from error
 
     @application.post("/api/reauth/queue")
     async def queue_reauth(request: Request) -> dict[str, Any]:

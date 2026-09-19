@@ -468,6 +468,77 @@ def _sub2api_key(admin_api_key: str | None = None) -> str:
     return key
 
 
+def _sub2api_accounts_endpoint(batch_endpoint: str) -> str:
+    """Return the account collection endpoint from the batch endpoint."""
+
+    marker = "/batch"
+    if batch_endpoint.rstrip("/").lower().endswith(marker):
+        return batch_endpoint.rstrip("/")[: -len(marker)]
+    return batch_endpoint.rstrip("/")
+
+
+def _sub2api_response_data(response: Any) -> Any:
+    """Read the standard Sub2API response envelope without retaining secrets."""
+
+    try:
+        parser = getattr(response, "json", None)
+        payload = parser() if callable(parser) else None
+    except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+        return None
+    if isinstance(payload, Mapping) and "data" in payload:
+        return payload.get("data")
+    return payload
+
+
+def _sub2api_existing_ids(data: Any, email: str) -> list[str]:
+    """Extract exact name matches from list responses (search is substring-based)."""
+
+    if isinstance(data, Mapping):
+        items = data.get("items")
+    else:
+        items = data
+    if not isinstance(items, list):
+        return []
+    normalized_email = str(email or "").strip().lower()
+    result: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        name = str(item.get("name") or item.get("email") or "").strip().lower()
+        account_id = str(item.get("id") or "").strip()
+        if name == normalized_email and account_id:
+            result.append(account_id)
+    return list(dict.fromkeys(result))
+
+
+def _sub2api_test_result(response: Any) -> tuple[bool, int, bool, bool, str]:
+    """Interpret the admin account-test SSE response without retaining its body."""
+
+    status = int(getattr(response, "status_code", 0) or 0)
+    if status < 200 or status >= 300:
+        return False, status, False, False, ""
+    text = str(getattr(response, "text", "") or "")
+    saw_complete = False
+    saw_error = False
+    error_message = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        try:
+            event = json.loads(line[5:].strip())
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(event, Mapping):
+            continue
+        if str(event.get("type") or "").strip().lower() == "error":
+            saw_error = True
+            error_message = safe_error(event.get("error") or event.get("message") or "")
+        if str(event.get("type") or "").strip().lower() == "test_complete":
+            saw_complete = bool(event.get("success"))
+    return saw_complete and not saw_error, status, saw_complete, saw_error, error_message
+
+
 async def upload_sub2api_records(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -485,32 +556,88 @@ async def upload_sub2api_records(
     endpoint, _ = _sub2api_endpoint(api_url)
     key = _sub2api_key(admin_api_key)
     accounts = [_sub2api_account(record, require_jwt=True) for record in rows]
-    body = {
-        "accounts": accounts,
-    }
+    body = {"accounts": accounts}
     try:
         raw_timeout = os.getenv("SUB2API_API_TIMEOUT_SECONDS", "30") if timeout_seconds is None else timeout_seconds
         timeout = max(1.0, min(float(raw_timeout or 30), 120.0))
     except (TypeError, ValueError):
         timeout = 30.0
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "X-API-Key": key,
+    }
+    updated: list[dict[str, Any]] = []
+    created: list[dict[str, Any]] = []
+    pending_create: list[dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
-        response = await client.post(
-            endpoint,
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "X-API-Key": key,
-                "Idempotency-Key": f"codex-account-tool-{uuid.uuid4().hex}",
-            },
-            content=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        )
-    if response.status_code < 200 or response.status_code >= 300:
-        raise RuntimeError(f"Sub2API 上传失败（HTTP {response.status_code}）")
+        accounts_endpoint = _sub2api_accounts_endpoint(endpoint)
+        # The batch endpoint is create-only.  Repeated uploads would otherwise
+        # leave duplicate email accounts and Sub2API could continue testing an
+        # older, invalid credential.  Resolve exact email matches first and
+        # replace their credentials through the normal account update endpoint.
+        for account in accounts:
+            email = str(account.get("name") or "").strip().lower()
+            existing_ids: list[str] = []
+            lookup = await client.get(
+                accounts_endpoint,
+                params={"page": 1, "page_size": 100, "search": email, "platform": "openai", "type": "oauth"},
+                headers={"Accept": "application/json", "X-API-Key": key},
+            )
+            if 200 <= lookup.status_code < 300:
+                existing_ids = _sub2api_existing_ids(_sub2api_response_data(lookup), email)
+            elif lookup.status_code not in {404, 405}:
+                raise RuntimeError(f"Sub2API 账号查询失败（HTTP {lookup.status_code}）")
+
+            for account_id in existing_ids:
+                update = await client.put(
+                    f"{accounts_endpoint}/{account_id}",
+                    headers=headers,
+                    content=json.dumps({"credentials": account["credentials"]}, ensure_ascii=False).encode("utf-8"),
+                )
+                if update.status_code < 200 or update.status_code >= 300:
+                    raise RuntimeError(f"Sub2API 账号更新失败（HTTP {update.status_code}）")
+                tested = await client.post(
+                    f"{accounts_endpoint}/{account_id}/test",
+                    headers=headers,
+                    content=json.dumps({"model_id": "gpt-5.6-luna", "prompt": "hi"}, ensure_ascii=False).encode("utf-8"),
+                )
+                valid, test_status, saw_complete, saw_error, test_error = _sub2api_test_result(tested)
+                if not valid:
+                    suffix = f"：{test_error}" if test_error else ""
+                    raise RuntimeError(
+                        f"Sub2API 账号验活失败（HTTP {test_status or '未知'}，完成事件={'有' if saw_complete else '无'}，错误事件={'有' if saw_error else '无'}）{suffix}，请重新授权后再上传"
+                    )
+
+            if existing_ids:
+                updated.append({
+                    "email": email,
+                    "uploaded": True,
+                    "updated": True,
+                    "validated": True,
+                    "updated_accounts": len(existing_ids),
+                })
+
+            if not existing_ids:
+                pending_create.append(account)
+        if pending_create:
+            response = await client.post(
+                endpoint,
+                headers={**headers, "Idempotency-Key": f"codex-account-tool-{uuid.uuid4().hex}"},
+                content=json.dumps({"accounts": pending_create}, ensure_ascii=False).encode("utf-8"),
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                raise RuntimeError(f"Sub2API 上传失败（HTTP {response.status_code}）")
+            created.extend(
+                {"email": str(account.get("name") or "").strip().lower(), "uploaded": True, "created": True}
+                for account in pending_create
+            )
+    items = [*updated, *created]
     return {
         "requested": len(rows),
         "uploaded": len(rows),
         "failed": 0,
-        "items": [{"email": str(row.get("email") or "").strip().lower(), "uploaded": True} for row in rows],
+        "items": items or [{"email": str(row.get("email") or "").strip().lower(), "uploaded": True} for row in rows],
     }
 
 
