@@ -165,6 +165,23 @@ class Database:
             proxy_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(proxies)").fetchall()}
             if "last_claim_at" not in proxy_columns:
                 connection.execute("ALTER TABLE proxies ADD COLUMN last_claim_at REAL NOT NULL DEFAULT 0")
+            # Preserve previously observed deactivated accounts as a distinct
+            # state after upgrading.  Older versions stored every authorization
+            # error as ``failed``, which caused these terminal accounts to be
+            # retried indefinitely.
+            connection.execute(
+                """
+                UPDATE accounts
+                   SET status='disabled'
+                 WHERE lower(status)='failed'
+                   AND (
+                       instr(lower(last_error), 'account_deactivated') > 0
+                       OR instr(lower(last_error), 'account_disabled') > 0
+                       OR instr(lower(last_error), 'account disabled') > 0
+                       OR instr(lower(last_error), 'has been deleted or deactivated') > 0
+                   )
+                """
+            )
 
 
 class Repository:
@@ -333,8 +350,9 @@ class Repository:
                     ON CONFLICT(email) DO UPDATE SET
                       password=excluded.password, client_id=excluded.client_id,
                       mailbox_refresh_token=excluded.mailbox_refresh_token,
-                      status=CASE WHEN accounts.status='running' THEN 'running' ELSE 'pending' END,
-                      last_error='', updated_at=excluded.updated_at
+                      status=CASE WHEN accounts.status IN ('running','disabled') THEN accounts.status ELSE 'pending' END,
+                      last_error=CASE WHEN accounts.status='disabled' THEN accounts.last_error ELSE '' END,
+                      updated_at=excluded.updated_at
                     """,
                     (account_id, record["email"], record["password"], record["client_id"], record["mailbox_refresh_token"], now, now),
                 )
@@ -357,7 +375,7 @@ class Repository:
         where_parts: list[str] = []
         params: list[Any] = []
         normalized_status = str(status or "").strip().lower()
-        if normalized_status in {"pending", "running", "success", "failed"}:
+        if normalized_status in {"pending", "running", "success", "failed", "disabled"}:
             where_parts.append("lower(a.status)=?")
             params.append(normalized_status)
         for token in tokens:
@@ -421,7 +439,7 @@ class Repository:
         """Return account ids in a specific authorization state."""
 
         normalized = str(status or "").strip().lower()
-        if normalized not in {"pending", "running", "success", "failed"}:
+        if normalized not in {"pending", "running", "success", "failed", "disabled"}:
             return []
         with self.db.connect() as connection:
             rows = connection.execute(
@@ -445,6 +463,16 @@ class Repository:
             existing = int(connection.execute(f"SELECT COUNT(*) FROM accounts WHERE id IN ({marks})", normalized).fetchone()[0])
             connection.execute(f"DELETE FROM accounts WHERE id IN ({marks})", normalized)
         return {"requested": len(normalized), "deleted": existing, "skipped": len(normalized) - existing}
+
+    def delete_disabled_accounts(self) -> dict[str, int]:
+        """Delete all accounts explicitly classified as deactivated."""
+
+        with self.db.connect() as connection:
+            deleted = int(connection.execute(
+                "SELECT COUNT(*) FROM accounts WHERE lower(status)='disabled'"
+            ).fetchone()[0])
+            connection.execute("DELETE FROM accounts WHERE lower(status)='disabled'")
+        return {"deleted": deleted}
 
     def save_upload_statuses(
         self,

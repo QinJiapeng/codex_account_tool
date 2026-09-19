@@ -13,7 +13,7 @@ const api = async (path, options = {}) => {
   return data;
 };
 
-const statusLabels = {success: "成功", failed: "失败", running: "进行中", pending: "待处理", queued: "排队中", cancelled: "已取消"};
+const statusLabels = {success: "成功", failed: "失败", disabled: "已禁用", running: "进行中", pending: "待处理", queued: "排队中", cancelled: "已取消"};
 const jobStepLabels = {queued: "等待执行", proxy: "获取代理", login: "登录授权", save_token: "保存 Token", finished: "已完成"};
 const selectedAccounts = new Set();
 const accountSnapshot = new Map();
@@ -23,7 +23,7 @@ const initialAccountParams = new URLSearchParams(window.location.search);
 const initialAccountPage = Number(initialAccountParams.get("page"));
 const initialAccountPageSize = Number(initialAccountParams.get("page_size"));
 let accountSearchQuery = String(initialAccountParams.get("q") || "").slice(0, 200);
-const validAccountStatuses = ["", "pending", "running", "success", "failed"];
+const validAccountStatuses = ["", "pending", "running", "success", "failed", "disabled"];
 const initialAccountStatus = String(initialAccountParams.get("status") || "").toLowerCase();
 let accountStatusFilter = validAccountStatuses.includes(initialAccountStatus) ? initialAccountStatus : "";
 const initialProxyPage = Number(initialAccountParams.get("proxy_page"));
@@ -59,6 +59,7 @@ const operationState = {
   quotaIds: new Set(),
   quotaTargetCount: 0,
   targetedQuotaBusy: false,
+  cleanupDisabledBusy: false,
 };
 
 function escapeHtml(value) {
@@ -247,8 +248,8 @@ function accountStatusDisplay(account, activity = "") {
     return `<span class="account-status account-status-${tone} account-status-busy" title="${title}"><span class="status-spinner" aria-hidden="true"></span>${label}</span>`;
   }
   const status = String(account.status || "pending").toLowerCase();
-  const tone = ["success", "failed", "running", "pending"].includes(status) ? status : "pending";
-  const title = status === "failed" && account.last_error ? ` title="${escapeHtml(account.last_error)}"` : "";
+  const tone = ["success", "failed", "disabled", "running", "pending"].includes(status) ? status : "pending";
+  const title = ["failed", "disabled"].includes(status) && account.last_error ? ` title="${escapeHtml(account.last_error)}"` : "";
   return `<span class="account-status account-status-${tone}"${title}>${escapeHtml(statusLabels[status] || "待处理")}</span>`;
 }
 
@@ -545,8 +546,8 @@ function updateAccountSelectionState() {
     : count ? `刷新选中额度（${count}）` : "查询全部额度";
   const reauthButton = $("reauthSelected");
   const quotaButton = $("quotaSelected");
-  reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy;
-  quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy;
+  reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   reauthButton.classList.toggle("is-busy", operationState.reauthBusy);
   quotaButton.classList.toggle("is-busy", operationState.quotaBusy);
   reauthButton.setAttribute("aria-busy", String(operationState.reauthBusy));
@@ -554,16 +555,22 @@ function updateAccountSelectionState() {
   const retryReauthButton = $("retryFailedReauth");
   const retryQuotaButton = $("retryFailedQuota");
   if (retryReauthButton) {
-    retryReauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.quotaBusy || operationState.targetedQuotaBusy;
+    retryReauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
     retryReauthButton.classList.toggle("is-busy", operationState.targetedReauthBusy);
     retryReauthButton.setAttribute("aria-busy", String(operationState.targetedReauthBusy));
   }
   if (retryQuotaButton) {
-    retryQuotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.reauthBusy || operationState.targetedReauthBusy;
+    retryQuotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.cleanupDisabledBusy;
     retryQuotaButton.classList.toggle("is-busy", operationState.targetedQuotaBusy);
     retryQuotaButton.setAttribute("aria-busy", String(operationState.targetedQuotaBusy));
   }
-  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy;
+  const cleanupDisabledButton = $("clearDisabledAccounts");
+  if (cleanupDisabledButton) {
+    cleanupDisabledButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+    cleanupDisabledButton.classList.toggle("is-busy", operationState.cleanupDisabledBusy);
+    cleanupDisabledButton.setAttribute("aria-busy", String(operationState.cleanupDisabledBusy));
+  }
+  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
 }
 
 async function refreshData({showError = true} = {}) {
@@ -758,7 +765,10 @@ async function runAccountAction(path) {
     if (path === "/api/reauth/queue") {
       const label = selected ? "已重新授权选中账号" : "已重新授权全部账号";
       const connection = result.use_proxy ? "代理池模式" : "直连模式";
-      setAccountResult("actionResult", `${label}（${connection}）：加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个`);
+      const skipped = Number(result.skipped || 0);
+      const disabledSkipped = Number(result.disabled_skipped || 0);
+      const skippedText = skipped ? `，跳过 ${skipped} 个${disabledSkipped ? `（已禁用 ${disabledSkipped} 个）` : ""}` : "";
+      setAccountResult("actionResult", `${label}（${connection}）：加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个${skippedText}`);
     } else {
       const label = selected ? "已刷新选中额度" : "额度查询完成";
       setAccountResult("actionResult", Array.isArray(result.results) && result.results.length
@@ -807,6 +817,23 @@ $("reauthSelected").onclick = () => runAccountAction("/api/reauth/queue").catch(
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedReauth").onclick = () => runTargetedAccountAction("/api/reauth/retry-failed", "重新授权失败账号");
 $("retryFailedQuota").onclick = () => runTargetedAccountAction("/api/quotas/refresh-failed", "查询失败额度账号");
+$("clearDisabledAccounts").onclick = async () => {
+  if (operationState.cleanupDisabledBusy || !window.confirm("确定删除全部已禁用账号吗？相关 Token、额度和授权任务也会一并删除。")) return;
+  operationState.cleanupDisabledBusy = true;
+  updateAccountSelectionState();
+  setAccountResult("actionResult", "正在清理已禁用账号，请稍候…");
+  try {
+    const result = await api("/api/accounts/disabled", {method: "DELETE"});
+    selectedAccounts.clear();
+    setAccountResult("actionResult", `已清理 ${result.deleted || 0} 个禁用账号`);
+    await refreshData();
+  } catch (error) {
+    setAccountResult("actionResult", error.message);
+  } finally {
+    operationState.cleanupDisabledBusy = false;
+    updateAccountSelectionState();
+  }
+};
 $("deleteSelected").onclick = async () => {
   const ids = [...selectedAccounts];
   if (!ids.length || !window.confirm(`确定删除选中的 ${ids.length} 个账号吗？相关 Token、额度和授权任务也会删除。`)) return;
@@ -890,7 +917,7 @@ $("saveSettings").onclick = async () => {
   } catch (error) { $("settingsResult").textContent = error.message; }
 };
 $("accountSearch").value = accountSearchQuery;
-$("accountStatusFilter").value = ["", "pending", "running", "success", "failed"].includes(accountStatusFilter) ? accountStatusFilter : "";
+$("accountStatusFilter").value = validAccountStatuses.includes(accountStatusFilter) ? accountStatusFilter : "";
 $("accountPageSize").value = String(accountPagination.pageSize);
 $("accountPage").value = String(accountPagination.page);
 $("proxyPageSize").value = String(proxyPagination.pageSize);

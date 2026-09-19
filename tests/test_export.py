@@ -529,16 +529,18 @@ def test_api_status_filter_and_targeted_retry_routes(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ReauthService, "queue_accounts", fake_queue)
     monkeypatch.setattr(QuotaService, "refresh", fake_refresh)
     with TestClient(create_app(settings)) as client:
-        imported = client.post("/api/accounts/import", json={"text": "failed@example.com----pw----cid----" + "a" * 20 + "\nsuccess@example.com----pw----cid----" + "b" * 20})
+        imported = client.post("/api/accounts/import", json={"text": "failed@example.com----pw----cid----" + "a" * 20 + "\nsuccess@example.com----pw----cid----" + "b" * 20 + "\ndisabled@example.com----pw----cid----" + "c" * 20})
         assert imported.status_code == 200
         repository = Repository(Database(settings.db_path))
         failed = repository.get_account_by_email("failed@example.com")
         successful = repository.get_account_by_email("success@example.com")
-        assert failed and successful
+        disabled = repository.get_account_by_email("disabled@example.com")
+        assert failed and successful and disabled
         for account in (failed, successful):
             repository.save_token(account["id"], {"email": account["email"], "access_token": "access", "refresh_token": "refresh"})
         repository.update_account(failed["id"], status="failed", error="test failure")
         repository.update_account(successful["id"], status="success", authorized=True)
+        repository.update_account(disabled["id"], status="disabled", error="account_deactivated")
         repository.save_quota(failed["id"], {"status": "rate_limited", "http_status": 429})
         repository.save_quota(successful["id"], {"status": "success", "credits_balance": 50, "credits_has": True})
 
@@ -546,6 +548,11 @@ def test_api_status_filter_and_targeted_retry_routes(tmp_path: Path, monkeypatch
         assert filtered.status_code == 200
         assert filtered.json()["status"] == "failed"
         assert [item["email"] for item in filtered.json()["items"]] == ["failed@example.com"]
+
+        disabled_filtered = client.get("/api/accounts?status=disabled&page=1&page_size=20")
+        assert disabled_filtered.status_code == 200
+        assert disabled_filtered.json()["status"] == "disabled"
+        assert [item["email"] for item in disabled_filtered.json()["items"]] == ["disabled@example.com"]
 
         retry_reauth = client.post("/api/reauth/retry-failed")
         assert retry_reauth.status_code == 200
@@ -556,6 +563,12 @@ def test_api_status_filter_and_targeted_retry_routes(tmp_path: Path, monkeypatch
         assert retry_quota.status_code == 200
         assert retry_quota.json()["matched"] == 1
         assert quota_calls == [[failed["id"]]]
+
+        cleanup = client.delete("/api/accounts/disabled")
+        assert cleanup.status_code == 200
+        assert cleanup.json() == {"deleted": 1}
+        assert repository.get_account(disabled["id"]) is None
+        assert repository.get_account(failed["id"]) is not None
 
 
 def test_authorization_workbench_contains_import_dialog_and_no_separate_account_tab():
@@ -592,6 +605,9 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="account-action-label">账号操作' in html
     assert 'class="account-action-label">导出与上传' in html
     assert 'id="forceUpload"' in html
+    assert 'id="clearDisabledAccounts"' in html
+    assert '<option value="disabled">已禁用</option>' in html
+    assert '/api/accounts/disabled' in script
     assert "强制重传" in html
     assert 'class="status-spinner"' in script
     assert '查询中' in script

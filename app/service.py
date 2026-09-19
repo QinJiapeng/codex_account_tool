@@ -690,6 +690,18 @@ def safe_error(value: Any) -> str:
     return re.sub(r"\s+", " ", text)[:500]
 
 
+def account_is_disabled_error(value: Any) -> bool:
+    """Recognize the explicit upstream signal for a deleted/deactivated account."""
+
+    text = str(value or "").lower()
+    return any(marker in text for marker in (
+        "account_deactivated",
+        "account_disabled",
+        "account disabled",
+        "has been deleted or deactivated",
+    ))
+
+
 def parse_four_segment_line(value: str) -> dict[str, str] | None:
     """Parse only ``email----password----client_id----refresh_token``.
 
@@ -820,10 +832,16 @@ class ReauthService:
             accounts, _ = self.repository.list_accounts(limit=5000)
             account_ids = [str(item["id"]) for item in accounts]
         queued = duplicate = skipped = 0
+        disabled_skipped = 0
         jobs = []
         for account_id in dict.fromkeys(str(value).strip() for value in account_ids if str(value).strip()):
-            if self.repository.get_account(account_id) is None:
+            account = self.repository.get_account(account_id)
+            if account is None:
                 skipped += 1
+                continue
+            if str(account.get("status") or "").strip().lower() == "disabled":
+                skipped += 1
+                disabled_skipped += 1
                 continue
             active = self.repository.active_job(account_id)
             if active:
@@ -838,7 +856,14 @@ class ReauthService:
             jobs.append(job)
             queued += 1
             await self.submit(str(job["id"]))
-        return {"queued": queued, "duplicate": duplicate, "skipped": skipped, "use_proxy": bool(use_proxy), "jobs": jobs}
+        return {
+            "queued": queued,
+            "duplicate": duplicate,
+            "skipped": skipped,
+            "disabled_skipped": disabled_skipped,
+            "use_proxy": bool(use_proxy),
+            "jobs": jobs,
+        }
 
     async def _worker(self, index: int) -> None:
         while not self._stopping:
@@ -862,6 +887,17 @@ class ReauthService:
         account = self.repository.get_account(str(job["account_id"]))
         if not account:
             self.repository.update_job(job_id, status="failed", current_step="finished", error="账号不存在", finished_at=utc_now())
+            return
+        if str(account.get("status") or "").strip().lower() == "disabled":
+            message = "账号已禁用，跳过重新授权"
+            self.repository.update_job(
+                job_id,
+                status="cancelled",
+                current_step="finished",
+                error=message,
+                finished_at=utc_now(),
+            )
+            self.repository.add_event(job_id, "warning", message)
             return
         use_proxy = bool(job["use_proxy"])
         self.repository.update_job(
@@ -897,6 +933,7 @@ class ReauthService:
         except asyncio.CancelledError:
             raise
         except Exception as error:
+            account_disabled = account_is_disabled_error(error)
             error_message = safe_error(error)
             changes: dict[str, Any] = {
                 "status": "failed",
@@ -907,8 +944,13 @@ class ReauthService:
             if use_proxy and lease is None:
                 changes["proxy_state"] = "failed"
             self.repository.update_job(job_id, **changes)
-            self.repository.update_account(account["id"], status="failed", error=error_message)
-            self.repository.add_event(job_id, "error", f"重新授权失败：{error_message}")
+            self.repository.update_account(
+                account["id"],
+                status="disabled" if account_disabled else "failed",
+                error=error_message,
+            )
+            event_prefix = "检测到账号已禁用" if account_disabled else "重新授权失败"
+            self.repository.add_event(job_id, "error", f"{event_prefix}：{error_message}")
         finally:
             if lease:
                 with contextlib.suppress(Exception):

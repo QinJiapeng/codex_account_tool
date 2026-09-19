@@ -63,6 +63,72 @@ def test_account_list_can_filter_authorization_status(tmp_path: Path):
     assert repository.list_accounts(status="not-a-status")[1] == 3
 
 
+def test_initialize_migrates_deactivated_failures_to_disabled_status(tmp_path: Path):
+    database = Database(tmp_path / "tool.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([{
+        "email": "disabled@example.com",
+        "password": "pw",
+        "client_id": "cid",
+        "mailbox_refresh_token": "a" * 20,
+    }])
+    account = repository.get_account_by_email("disabled@example.com")
+    assert account
+    repository.update_account(
+        account["id"],
+        status="failed",
+        error="OTP 验证失败: HTTP 403 code=account_deactivated type=invalid_request_error",
+    )
+
+    database.initialize()
+
+    migrated = repository.get_account(account["id"])
+    assert migrated and migrated["status"] == "disabled"
+    items, total = repository.list_accounts(status="disabled")
+    assert total == 1
+    assert [item["email"] for item in items] == ["disabled@example.com"]
+    assert repository.account_ids_by_status("failed") == []
+    assert repository.account_ids_by_status("disabled") == [account["id"]]
+
+
+def test_import_preserves_disabled_status_and_cleanup_deletes_only_disabled_accounts(tmp_path: Path):
+    database = Database(tmp_path / "tool.db")
+    database.initialize()
+    repository = Repository(database)
+    disabled_record = {
+        "email": "disabled@example.com",
+        "password": "old-password",
+        "client_id": "old-client",
+        "mailbox_refresh_token": "a" * 20,
+    }
+    repository.import_accounts([
+        disabled_record,
+        {"email": "keep@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+    ])
+    disabled = repository.get_account_by_email("disabled@example.com")
+    kept = repository.get_account_by_email("keep@example.com")
+    assert disabled and kept
+    repository.update_account(disabled["id"], status="disabled", error="account_deactivated")
+    repository.save_token(disabled["id"], {
+        "email": disabled["email"],
+        "access_token": "placeholder-access",
+        "refresh_token": "placeholder-refresh",
+    })
+    repository.update_account(disabled["id"], status="disabled", error="account_deactivated")
+
+    repository.import_accounts([{**disabled_record, "password": "new-password"}])
+    reimported = repository.get_account(disabled["id"])
+    assert reimported and reimported["status"] == "disabled"
+    assert reimported["last_error"] == "account_deactivated"
+
+    result = repository.delete_disabled_accounts()
+    assert result == {"deleted": 1}
+    assert repository.get_account(disabled["id"]) is None
+    assert repository.get_account(kept["id"]) is not None
+    assert repository.token_rows([disabled["id"]]) == []
+
+
 def test_account_list_returns_safe_per_platform_upload_status(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()

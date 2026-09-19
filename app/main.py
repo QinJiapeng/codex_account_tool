@@ -198,7 +198,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "page_size": effective_size,
             "total_pages": total_pages,
             "q": q.strip(),
-            "status": status.strip().lower() if status.strip().lower() in {"pending", "running", "success", "failed"} else "",
+            "status": status.strip().lower() if status.strip().lower() in {"pending", "running", "success", "failed", "disabled"} else "",
         }
 
     @application.delete("/api/accounts")
@@ -208,6 +208,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if account_ids is None or not account_ids:
             raise HTTPException(status_code=422, detail="删除账号必须提供非空 ids 数组")
         return request.app.state.repository.delete_accounts(account_ids)
+
+    @application.delete("/api/accounts/disabled")
+    async def delete_disabled_accounts(request: Request) -> dict[str, int]:
+        """Delete all accounts classified as deleted or deactivated."""
+
+        return request.app.state.repository.delete_disabled_accounts()
 
     @application.get("/api/settings")
     async def get_settings(request: Request) -> dict[str, Any]:

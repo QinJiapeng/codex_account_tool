@@ -5,7 +5,7 @@ import pytest
 from app.config import Settings
 from app.db import Database, Repository
 from app.proxy import ProxyLease, ProxyPoolError
-from app.service import ReauthService
+from app.service import ReauthService, account_is_disabled_error
 
 
 def _settings(data_dir: Path) -> Settings:
@@ -63,6 +63,14 @@ class FakeReauthService(ReauthService):
         }
 
 
+class DeactivatedReauthService(ReauthService):
+    def _reauthorize_sync(self, account: dict[str, object], proxy_url: str, job_id: str) -> dict[str, str]:
+        raise RuntimeError(
+            "OTP 验证失败: HTTP 403 code=account_deactivated "
+            "type=invalid_request_error message=account has been deleted or deactivated"
+        )
+
+
 @pytest.mark.asyncio
 async def test_reauth_job_exposes_only_the_proxy_endpoint_after_claim(tmp_path: Path):
     repository = Repository(Database(tmp_path / "tool.db"))
@@ -106,3 +114,69 @@ async def test_reauth_job_marks_proxy_as_not_claimed_when_pool_is_empty(tmp_path
     assert stored["proxy_state"] == "failed"
     assert stored["proxy_endpoint"] == ""
     assert stored["error"] == "代理池当前没有可用代理"
+
+
+@pytest.mark.asyncio
+async def test_reauth_marks_deactivated_account_disabled(tmp_path: Path):
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    account = _account(repository)
+    service = DeactivatedReauthService(repository, _settings(tmp_path), FakeProxyPool())  # type: ignore[arg-type]
+    job = repository.create_job(str(account["id"]), False)
+    try:
+        await service._run(str(job["id"]), 0)
+    finally:
+        await service.stop()
+
+    stored_account = repository.get_account(str(account["id"]))
+    stored_job = repository.get_job(str(job["id"]))
+    assert stored_account and stored_account["status"] == "disabled"
+    assert stored_job and stored_job["status"] == "failed"
+    assert account_is_disabled_error(stored_account["last_error"])
+    events = " ".join(item["message"] for item in repository.list_events(str(job["id"])))
+    assert "检测到账号已禁用" in events
+
+
+@pytest.mark.asyncio
+async def test_reauth_queue_skips_disabled_accounts(tmp_path: Path):
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    disabled = _account(repository)
+    repository.update_account(str(disabled["id"]), status="disabled", error="account_deactivated")
+    repository.import_accounts([{
+        "email": "pending@example.com",
+        "password": "mail-password",
+        "client_id": "client-id",
+        "mailbox_refresh_token": "b" * 20,
+    }])
+    service = ReauthService(repository, _settings(tmp_path), FakeProxyPool())  # type: ignore[arg-type]
+    try:
+        result = await service.queue_accounts(use_proxy=False)
+    finally:
+        await service.stop()
+
+    assert result["queued"] == 1
+    assert result["skipped"] == 1
+    assert result["disabled_skipped"] == 1
+    assert len(result["jobs"]) == 1
+    assert result["jobs"][0]["account_id"] != disabled["id"]
+
+
+@pytest.mark.asyncio
+async def test_reauth_worker_cancels_recovered_job_for_disabled_account(tmp_path: Path):
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    disabled = _account(repository)
+    job = repository.create_job(str(disabled["id"]), False)
+    repository.update_account(str(disabled["id"]), status="disabled", error="account_deactivated")
+    service = ReauthService(repository, _settings(tmp_path), FakeProxyPool())  # type: ignore[arg-type]
+    try:
+        await service._run(str(job["id"]), 0)
+    finally:
+        await service.stop()
+
+    stored = repository.get_job(str(job["id"]))
+    stored_account = repository.get_account(str(disabled["id"]))
+    assert stored and stored["status"] == "cancelled"
+    assert stored["error"] == "账号已禁用，跳过重新授权"
+    assert stored_account and stored_account["status"] == "disabled"
