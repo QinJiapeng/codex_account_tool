@@ -158,13 +158,13 @@ th { color: #667085; font-weight: 600; }
 .proxy-pagination { padding-left: 0; padding-right: 0; }
 .account-status, .token-status, .liveness-status { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 58px; padding: 4px 8px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .account-status::before, .token-status::before, .liveness-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 2px #ffffffb3; }
-.account-status-success, .token-status-saved, .liveness-status-valid { color: #176b4c; border-color: #9bd7bc; background: #e4f8ed; }
+.account-status-success, .token-status-saved, .liveness-valid { color: #176b4c; border-color: #9bd7bc; background: #e4f8ed; }
 .account-status-failed { color: #a33c31; border-color: #f0aaa3; background: #ffe8e5; }
-.liveness-status-invalid { color: #a33c31; border-color: #f0aaa3; background: #ffe8e5; }
-.liveness-status-forbidden, .liveness-status-rate_limited, .liveness-status-temporary_failed { color: #9a5b16; border-color: #edc27a; background: #fff4dd; }
+.liveness-invalid { color: #a33c31; border-color: #f0aaa3; background: #ffe8e5; }
+.liveness-forbidden, .liveness-rate_limited, .liveness-temporary_failed { color: #9a5b16; border-color: #edc27a; background: #fff4dd; }
 .account-status-disabled { color: #7d2921; border-color: #dc8c83; background: #ffd9d4; }
 .account-status-running { color: #19538c; border-color: #98c4ed; background: #e5f2ff; }
-.account-status-pending, .token-status-empty, .liveness-status-unknown { color: #667085; border-color: #d7dee8; background: #f4f6f9; }
+.account-status-pending, .token-status-empty, .liveness-unknown { color: #667085; border-color: #d7dee8; background: #f4f6f9; }
 .account-status-reauthing, .account-status-queued { color: #6b45aa; border-color: #c8b6ed; background: #f1ebff; }
 .account-status-querying { color: #19538c; border-color: #98c4ed; background: #e5f2ff; }
 .account-status-busy::before { display: none; }
