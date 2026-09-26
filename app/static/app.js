@@ -607,20 +607,19 @@ function updateAccountSelectionState() {
   quotaButton.setAttribute("aria-busy", String(operationState.quotaBusy));
   const retryAuthorizationType = $("retryAuthorizationType");
   const retryAuthorizationButton = $("retryFailedAuthorization");
-  const retryQuotaButton = $("retryFailedQuota");
-  const retryTotpSetup = String(retryAuthorizationType?.value || "reauth") === "totp_setup";
-  const retryAuthorizationBusy = retryTotpSetup ? operationState.targetedTotpSetupBusy : operationState.targetedReauthBusy;
+  const retryType = String(retryAuthorizationType?.value || "reauth");
+  const retryBusy = retryType === "totp_setup"
+    ? operationState.targetedTotpSetupBusy
+    : retryType === "quota" ? operationState.targetedQuotaBusy : operationState.targetedReauthBusy;
+  const retryLabel = retryType === "totp_setup"
+    ? "重试开通 2FA 失败"
+    : retryType === "quota" ? "重试刷新额度失败" : "重试重新授权失败";
   if (retryAuthorizationType) retryAuthorizationType.disabled = !hasAccounts || anyAccountOperationBusy;
   if (retryAuthorizationButton) {
     retryAuthorizationButton.disabled = !hasAccounts || anyAccountOperationBusy;
-    retryAuthorizationButton.textContent = retryAuthorizationBusy ? "重试失败任务中…" : retryTotpSetup ? "重试开通 2FA 失败" : "重试重新授权失败";
-    retryAuthorizationButton.classList.toggle("is-busy", retryAuthorizationBusy);
-    retryAuthorizationButton.setAttribute("aria-busy", String(retryAuthorizationBusy));
-  }
-  if (retryQuotaButton) {
-    retryQuotaButton.disabled = !hasAccounts || anyAccountOperationBusy;
-    retryQuotaButton.classList.toggle("is-busy", operationState.targetedQuotaBusy);
-    retryQuotaButton.setAttribute("aria-busy", String(operationState.targetedQuotaBusy));
+    retryAuthorizationButton.textContent = retryBusy ? "重试失败任务中…" : retryLabel;
+    retryAuthorizationButton.classList.toggle("is-busy", retryBusy);
+    retryAuthorizationButton.setAttribute("aria-busy", String(retryBusy));
   }
   const cleanupDisabledButton = $("clearDisabledAccounts");
   if (cleanupDisabledButton) {
@@ -910,7 +909,7 @@ async function runTargetedAccountAction(path, label) {
   const isReauth = path === "/api/reauth/retry-failed";
   const isTotpSetup = path === "/api/accounts/2fa/retry-failed";
   const busyKey = isReauth ? "targetedReauthBusy" : isTotpSetup ? "targetedTotpSetupBusy" : "targetedQuotaBusy";
-  const button = $(isReauth || isTotpSetup ? "retryFailedAuthorization" : "retryFailedQuota");
+  const button = $("retryFailedAuthorization");
   if (!button || button.disabled) return;
   operationState[busyKey] = true;
   updateAccountSelectionState();
@@ -935,10 +934,13 @@ async function runTargetedAccountAction(path, label) {
 
 function runRetryAuthorizationAction() {
   const type = String($("retryAuthorizationType")?.value || "reauth");
-  return runTargetedAccountAction(
-    type === "totp_setup" ? "/api/accounts/2fa/retry-failed" : "/api/reauth/retry-failed",
-    type === "totp_setup" ? "重试开通 2FA 失败账号" : "重试重新授权失败账号",
-  );
+  const actions = {
+    reauth: ["/api/reauth/retry-failed", "重试重新授权失败账号"],
+    totp_setup: ["/api/accounts/2fa/retry-failed", "重试开通 2FA 失败账号"],
+    quota: ["/api/quotas/refresh-failed", "重试刷新额度失败账号"],
+  };
+  const [path, label] = actions[type] || actions.reauth;
+  return runTargetedAccountAction(path, label);
 }
 
 $("authorizationAction").onclick = () => runAccountAction("/api/reauth/queue").catch((error) => { setAccountResult("actionResult", error.message); });
@@ -947,7 +949,6 @@ $("livenessSelected").onclick = () => runLivenessAction().catch((error) => { set
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedAuthorization").onclick = () => runRetryAuthorizationAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryAuthorizationType").onchange = () => updateAccountSelectionState();
-$("retryFailedQuota").onclick = () => runTargetedAccountAction("/api/quotas/refresh-failed", "查询失败额度账号");
 $("clearDisabledAccounts").onclick = async () => {
   if (operationState.cleanupDisabledBusy || !window.confirm("确定删除全部已禁用账号吗？相关 Token、额度和授权任务也会一并删除。")) return;
   operationState.cleanupDisabledBusy = true;
