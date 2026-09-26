@@ -182,6 +182,49 @@ def test_account_list_can_filter_authorization_status(tmp_path: Path):
     assert repository.list_accounts(status="not-a-status")[1] == 3
 
 
+def test_account_list_search_matches_totp_authorization_and_quota_statuses(tmp_path: Path):
+    database = Database(tmp_path / "status-search.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "totp@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20, "totp_secret": "JBSWY3DPEHPK3PXP"},
+        {"email": "pending-totp@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+        {"email": "quota-limited@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "c" * 20},
+        {"email": "quota-pending@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "d" * 20},
+        {"email": "mailbox-disabled@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "e" * 20},
+        {"email": "quota-zero@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "f" * 20},
+        {"email": "quota-unlimited@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "g" * 20},
+    ])
+
+    accounts = {
+        item["email"]: item
+        for item in repository.list_accounts()[0]
+    }
+    pending_job = repository.create_job(accounts["pending-totp@example.com"]["id"], False, operation="totp_setup")
+    repository.update_job(pending_job["id"], status="running")
+    repository.save_token(accounts["quota-limited@example.com"]["id"], {"email": "quota-limited@example.com", "access_token": "access", "refresh_token": "refresh"})
+    repository.save_token(accounts["quota-pending@example.com"]["id"], {"email": "quota-pending@example.com", "access_token": "access", "refresh_token": "refresh"})
+    repository.save_quota(accounts["quota-limited@example.com"]["id"], {"status": "rate_limited", "http_status": 429})
+    repository.save_quota(accounts["quota-zero@example.com"]["id"], {"status": "success", "credits_balance": 0, "credits_has": True})
+    repository.save_quota(accounts["quota-unlimited@example.com"]["id"], {"status": "success", "credits_unlimited": True})
+    repository.update_account(accounts["mailbox-disabled@example.com"]["id"], status="disabled", error="account_deactivated")
+
+    assert [item["email"] for item in repository.list_accounts(query="已开通")[0]] == ["totp@example.com"]
+    assert {item["email"] for item in repository.list_accounts(query="2FA 未开通")[0]} == {
+        "quota-limited@example.com",
+        "quota-pending@example.com",
+        "mailbox-disabled@example.com",
+        "quota-zero@example.com",
+        "quota-unlimited@example.com",
+    }
+    assert [item["email"] for item in repository.list_accounts(query="开通中")[0]] == ["pending-totp@example.com"]
+    assert [item["email"] for item in repository.list_accounts(query="429")[0]] == ["quota-limited@example.com"]
+    assert [item["email"] for item in repository.list_accounts(query="待查询")[0]] == ["quota-pending@example.com"]
+    assert [item["email"] for item in repository.list_accounts(query="0")[0]] == ["quota-zero@example.com"]
+    assert [item["email"] for item in repository.list_accounts(query="无额度")[0]] == ["quota-unlimited@example.com"]
+    assert [item["email"] for item in repository.list_accounts(query="邮箱已禁用")[0]] == ["mailbox-disabled@example.com"]
+
+
 def test_initialize_migrates_deactivated_failures_to_disabled_status(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()

@@ -412,26 +412,134 @@ class Repository:
         if normalized_status in {"pending", "running", "success", "failed", "disabled"}:
             where_parts.append("lower(a.status)=?")
             params.append(normalized_status)
-        for token in tokens:
-            where_parts.append(
-                """(
-                    instr(lower(a.email), ?) > 0
-                    OR instr(lower(a.id), ?) > 0
-                    OR instr(lower(a.status), ?) > 0
-                    OR EXISTS (
-                        SELECT 1 FROM quotas q
-                        WHERE q.account_id=a.id AND instr(lower(COALESCE(q.plan_type, '')), ?) > 0
-                    )
-                )"""
+
+        # Search the labels rendered by the account table as well as the raw
+        # database values. Quota data is optional, so the LEFT JOIN below also
+        # lets "待查询" find authorized accounts without a quota snapshot.
+        auth_status_aliases = {
+            "成功": "success",
+            "已授权": "success",
+            "授权成功": "success",
+            "授权中": "running",
+            "进行中": "running",
+            "待处理": "pending",
+            "排队中": "pending",
+            "失败": "failed",
+            "授权失败": "failed",
+            "已禁用": "disabled",
+            "邮箱已禁用": "disabled",
+            "邮箱失效": "disabled",
+            "失效": "disabled",
+            "封禁": "disabled",
+        }
+        generic_totp_terms = {"2fa", "totp"}
+        totp_enabled_terms = {"已开通", "开通成功", "已启用", "已配置", "enabled"}
+        totp_disabled_terms = {"未开通", "未启用", "未配置", "2fa未开通", "totp未配置"}
+        totp_running_terms = {"2fa开通中", "开通中", "setup_running"}
+        totp_pending_terms = {"2fa排队中", "setup_pending"}
+        quota_numeric_terms = {"0", "429"}
+        has_totp_detail = any(
+            token in totp_enabled_terms | totp_disabled_terms | totp_running_terms | totp_pending_terms
+            for token in tokens
+        )
+        active_totp_job = """
+            EXISTS (
+                SELECT 1 FROM jobs j
+                WHERE j.account_id=a.id
+                  AND j.operation='totp_setup'
+                  AND j.status IN ('pending', 'running')
             )
-            params.extend([token, token, token, token])
+        """
+        pending_totp_job = """
+            EXISTS (
+                SELECT 1 FROM jobs j
+                WHERE j.account_id=a.id
+                  AND j.operation='totp_setup'
+                  AND j.status='pending'
+            )
+        """
+        running_totp_job = """
+            EXISTS (
+                SELECT 1 FROM jobs j
+                WHERE j.account_id=a.id
+                  AND j.operation='totp_setup'
+                  AND j.status='running'
+            )
+        """
+
+        for token in tokens:
+            conditions = [
+                "instr(lower(COALESCE(a.email, '')), ?) > 0",
+                "instr(lower(COALESCE(a.status, '')), ?) > 0",
+                "instr(lower(COALESCE(a.last_error, '')), ?) > 0",
+                "instr(lower(COALESCE(q.plan_type, '')), ?) > 0",
+                "instr(lower(COALESCE(q.status, '')), ?) > 0",
+                "instr(lower(COALESCE(q.error_code, '')), ?) > 0",
+                "instr(lower(COALESCE(q.error_message, '')), ?) > 0",
+            ]
+            if token not in quota_numeric_terms:
+                conditions.insert(1, "instr(lower(COALESCE(a.id, '')), ?) > 0")
+            token_params: list[Any] = [token] * len(conditions)
+
+            auth_status = auth_status_aliases.get(token)
+            if auth_status:
+                conditions.append("lower(COALESCE(a.status, ''))=?")
+                token_params.append(auth_status)
+
+            if token in generic_totp_terms:
+                # A bare "2FA"/"TOTP" query means accounts with 2FA. When
+                # combined with a specific state (for example "2FA 未开通"),
+                # keep the generic term neutral so the state token can decide.
+                conditions.append("1=1" if has_totp_detail else "trim(COALESCE(a.totp_secret, '')) <> ''")
+            elif token in totp_enabled_terms:
+                conditions.append("trim(COALESCE(a.totp_secret, '')) <> ''")
+            elif token in totp_disabled_terms:
+                conditions.append(f"trim(COALESCE(a.totp_secret, '')) = '' AND NOT ({active_totp_job})")
+            elif token in totp_running_terms:
+                conditions.append(running_totp_job)
+            elif token in totp_pending_terms or token == "排队中":
+                conditions.append(pending_totp_job)
+
+            if token in {"待查询", "未查询", "quota_pending"}:
+                conditions.append(
+                    "EXISTS (SELECT 1 FROM tokens t WHERE t.account_id=a.id) "
+                    "AND (q.account_id IS NULL OR lower(COALESCE(q.status, '')) IN ('', 'pending', 'running'))"
+                )
+            elif token in {"查询中", "quota_running"}:
+                conditions.append("lower(COALESCE(q.status, ''))='running'")
+            elif token in {"查询成功", "额度正常", "quota_success"}:
+                conditions.append("lower(COALESCE(q.status, ''))='success'")
+            elif token in {"查询失败", "quota_failed"}:
+                conditions.append(
+                    "q.account_id IS NOT NULL AND lower(COALESCE(q.status, '')) NOT IN ('', 'success', 'pending', 'running')"
+                )
+            elif token in {"限流", "429", "quota_rate_limited"}:
+                conditions.append("lower(COALESCE(q.status, ''))='rate_limited' OR q.http_status=429")
+            elif token in {"未授权额度", "额度未授权", "quota_unauthorized"}:
+                conditions.append("lower(COALESCE(q.status, ''))='unauthorized'")
+            elif token in {"权限受限", "quota_forbidden"}:
+                conditions.append("lower(COALESCE(q.status, ''))='forbidden'")
+            elif token in {"无限", "quota_unlimited"}:
+                conditions.append("COALESCE(q.credits_unlimited, 0)=1")
+            elif token == "无额度":
+                conditions.append("COALESCE(q.credits_unlimited, 0)=1")
+            elif token in {"额度为0", "quota_zero", "0"}:
+                conditions.append(
+                    "q.account_id IS NOT NULL AND lower(COALESCE(q.status, ''))='success' "
+                    "AND COALESCE(q.credits_unlimited, 0)=0 AND "
+                    "(q.credits_balance=0 OR (q.credits_balance IS NULL AND COALESCE(q.credits_has, 0)=0))"
+                )
+
+            where_parts.append(f"({' OR '.join(conditions)})")
+            params.extend(token_params)
         where = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
         with self.db.connect() as connection:
-            total = int(connection.execute(f"SELECT COUNT(*) FROM accounts a {where}", params).fetchone()[0])
+            total = int(connection.execute(f"SELECT COUNT(*) FROM accounts a LEFT JOIN quotas q ON q.account_id=a.id {where}", params).fetchone()[0])
             rows = connection.execute(
                 f"""
                 SELECT a.*, EXISTS(SELECT 1 FROM tokens t WHERE t.account_id=a.id) AS has_token
                 FROM accounts a
+                LEFT JOIN quotas q ON q.account_id=a.id
                 {where}
                 ORDER BY a.updated_at DESC, a.email
                 LIMIT ? OFFSET ?
