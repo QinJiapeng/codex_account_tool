@@ -239,19 +239,23 @@ def build_export_document(records: Sequence[Mapping[str, Any]], format: str = "c
     if selected == "four-segment":
         lines: list[str] = []
         for record in rows:
-            fields = [
-                str(record.get("email") or "").strip(),
-                str(record.get("password") or "").strip(),
-                str(record.get("client_id") or "").strip(),
-                str(record.get("mailbox_refresh_token") or "").strip(),
-            ]
-            if not all(fields):
-                raise ValueError(f"{fields[0] or '账号'} 缺少邮箱四段凭据")
+            email = str(record.get("email") or "").strip()
+            password = str(record.get("password") or "").strip()
+            client_id = str(record.get("client_id") or "").strip()
+            mailbox_refresh_token = str(record.get("mailbox_refresh_token") or "").strip()
             totp_secret = _normalize_totp_secret(record.get("totp_secret"))
             if record.get("totp_secret") and not totp_secret:
-                raise ValueError(f"{fields[0] or '账号'} 的 2FA 密钥格式无效")
-            if totp_secret:
-                fields.append(totp_secret)
+                raise ValueError(f"{email or '账号'} 的 2FA 密钥格式无效")
+            if not email or not password:
+                raise ValueError(f"{email or '账号'} 缺少邮箱或密码")
+            if not client_id and not mailbox_refresh_token and totp_secret:
+                fields = [email, password, totp_secret]
+            else:
+                fields = [email, password, client_id, mailbox_refresh_token]
+                if not all(fields):
+                    raise ValueError(f"{email or '账号'} 缺少邮箱四段凭据")
+                if totp_secret:
+                    fields.append(totp_secret)
             lines.append("----".join(fields))
         content = ("\ufeff" + "\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
         return content, "text/plain; charset=utf-8", f"codex-account-four-segment-{len(lines)}.txt"
@@ -846,7 +850,7 @@ def parse_four_segment_line(value: str) -> dict[str, str] | None:
     if not raw or raw.startswith("#"):
         return None
     parts = [part.strip() for part in raw.split("----")]
-    if len(parts) not in {4, 5}:
+    if len(parts) not in {3, 4, 5}:
         return None
     email, password = parts[:2]
     email = email.lower()
@@ -854,6 +858,17 @@ def parse_four_segment_line(value: str) -> dict[str, str] | None:
         return None
     if not password:
         return None
+    if len(parts) == 3:
+        totp_secret = _normalize_totp_secret(parts[2])
+        if not totp_secret:
+            return None
+        return {
+            "email": email,
+            "password": password,
+            "client_id": "",
+            "mailbox_refresh_token": "",
+            "totp_secret": totp_secret,
+        }
     client_id, mailbox_refresh_token = parts[2:4]
     if not client_id or len(mailbox_refresh_token) < 20:
         return None
@@ -883,7 +898,7 @@ def parse_import_text(text: str) -> tuple[list[dict[str, str]], int, int]:
 
 
 class ReauthMailProvider:
-    kind = "outlook-4-segment"
+    kind = "outlook-4-segment-or-totp"
     pooled = False
 
     def __init__(self, account: dict[str, Any], repository: Repository, settings: Settings, proxy_url: str, emit, cancel_check):
@@ -904,6 +919,8 @@ class ReauthMailProvider:
         return str(self.account["email"])
 
     def wait_for_otp(self, email: str, timeout: int = 120, issued_after: float | None = None) -> str:
+        if not str(self.account.get("client_id") or "").strip() or not str(self.account.get("mailbox_refresh_token") or "").strip():
+            raise RuntimeError("登录还需要邮箱验证码，但该 3 段 2FA 账号未配置 Outlook 邮箱凭据")
         since = datetime.now(timezone.utc)
         if issued_after is not None:
             since = datetime.fromtimestamp(float(issued_after) - 5, tz=timezone.utc)

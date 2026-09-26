@@ -19,6 +19,17 @@ def test_five_segments_accept_a_normalized_totp_secret():
     ) is None
 
 
+def test_three_segments_accept_password_and_totp_without_outlook_credentials():
+    record = parse_four_segment_line("User@example.com----pw----jbsw y3dp ehpk 3pxp==")
+    assert record == {
+        "email": "user@example.com",
+        "password": "pw",
+        "client_id": "",
+        "mailbox_refresh_token": "",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }
+
+
 def test_import_deduplicates_and_counts_invalid():
     text = "\n".join([
         "a@example.com----pw----cid----abcdefghijklmnopqrst",

@@ -119,13 +119,19 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 - Outlook 客户端 ID：用于刷新 Outlook 邮箱访问令牌。
 - Outlook refresh token：用于读取该邮箱收到的 OpenAI 登录验证码。
 
-默认使用四段格式；需要登录 2FA 时，在末尾追加 Base32 TOTP 密钥：
+没有 Outlook 邮箱凭据、只使用登录 2FA 的账号使用三段格式：
+
+```text
+user@example.com----chatgpt-password----JBSWY3DPEHPK3PXP
+```
+
+仍需要 Outlook 邮箱接收登录验证码的 2FA 账号，在四段格式末尾追加 Base32 TOTP 密钥：
 
 ```text
 user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-token----JBSWY3DPEHPK3PXP
 ```
 
-邮箱单列、三段、六段或缺少任一字段都会被计为无效行。重复导入同一邮箱会更新其本地凭据。TOTP 密钥只保存在本地运行数据库中，不会出现在账号列表、OAuth 导出或上传内容中。
+邮箱单列、两段、六段或缺少必要字段都会被计为无效行。重复导入同一邮箱会更新其本地凭据。三段格式账号如果登录还要求邮箱验证码，会因缺少 Outlook 邮箱凭据而失败。TOTP 密钥只保存在本地运行数据库中，不会出现在账号列表、OAuth 导出或上传内容中。
 
 ### 3. 重新授权
 
