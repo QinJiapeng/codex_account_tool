@@ -839,8 +839,12 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert "/api/accounts/2fa/setup" in script
     assert "/api/accounts/2fa/retry-failed" in script
     assert "/api/quotas/refresh-failed" in script
+    styles = Path("app/static/styles.css").read_text(encoding="utf-8")
     assert 'class="account-action-label">账号操作' in html
     assert "验活状态" in html
+    assert "#retryAuthorizationType { width: 100px" in styles
+    assert "#authorizationAction { width: 145px" in styles
+    assert "#retryFailedAuthorization { width: 150px" in styles
     assert 'class="account-action-label">导出与上传' in html
     assert 'id="forceUpload"' in html
     assert 'id="clearDisabledAccounts"' in html
@@ -866,7 +870,6 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert '/api/settings' in script
     assert 'aria-busy' in script
     assert 'button.is-busy:disabled' in Path("app/static/styles.css").read_text(encoding="utf-8")
-    styles = Path("app/static/styles.css").read_text(encoding="utf-8")
     assert '.liveness-valid' in styles
     assert '.liveness-invalid' in styles
     assert '.liveness-forbidden' in styles
