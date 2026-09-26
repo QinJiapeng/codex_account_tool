@@ -214,7 +214,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.delete("/api/accounts/disabled")
     async def delete_disabled_accounts(request: Request) -> dict[str, int]:
-        """Delete all accounts classified as deleted or deactivated."""
+        """Delete accounts classified as disabled or having unusable mailbox credentials."""
 
         return request.app.state.repository.delete_disabled_accounts()
 

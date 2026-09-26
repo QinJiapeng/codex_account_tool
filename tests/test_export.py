@@ -844,6 +844,8 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="account-action-label">导出与上传' in html
     assert 'id="forceUpload"' in html
     assert 'id="clearDisabledAccounts"' in html
+    assert "一键清理禁用/失效账号" in html
+    assert "邮箱失效" in html
     assert '<option value="disabled">已禁用</option>' in html
     assert '/api/accounts/disabled' in script
     assert "强制重传" in html

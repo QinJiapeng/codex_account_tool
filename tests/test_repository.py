@@ -272,6 +272,31 @@ def test_import_preserves_disabled_status_and_cleanup_deletes_only_disabled_acco
     assert repository.token_rows([disabled["id"]]) == []
 
 
+def test_cleanup_includes_terminal_mailbox_failures_but_keeps_retryable_failures(tmp_path: Path):
+    database = Database(tmp_path / "mailbox-cleanup.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "disabled@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "expired@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+        {"email": "retryable@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "c" * 20},
+    ])
+    disabled = repository.get_account_by_email("disabled@example.com")
+    expired = repository.get_account_by_email("expired@example.com")
+    retryable = repository.get_account_by_email("retryable@example.com")
+    assert disabled and expired and retryable
+    repository.update_account(disabled["id"], status="disabled", error="账号已禁用")
+    repository.update_account(expired["id"], status="failed", error="AADSTS700082: refresh token has expired")
+    repository.update_account(retryable["id"], status="failed", error="协议登录请求失败: HTTP 503")
+
+    result = repository.delete_disabled_accounts()
+
+    assert result == {"deleted": 2}
+    assert repository.get_account(disabled["id"]) is None
+    assert repository.get_account(expired["id"]) is None
+    assert repository.get_account(retryable["id"]) is not None
+
+
 def test_account_list_returns_safe_per_platform_upload_status(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()

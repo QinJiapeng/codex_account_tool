@@ -997,14 +997,14 @@ $("authorizationAction").onclick = () => runSelectedAccountAction().catch((error
 $("retryFailedAuthorization").onclick = () => runRetryAuthorizationAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryAuthorizationType").onchange = () => updateAccountSelectionState();
 $("clearDisabledAccounts").onclick = async () => {
-  if (operationState.cleanupDisabledBusy || !window.confirm("确定删除全部已禁用账号吗？相关 Token、额度和授权任务也会一并删除。")) return;
+  if (operationState.cleanupDisabledBusy || !window.confirm("确定删除全部已禁用或邮箱失效账号吗？相关 Token、额度和授权任务也会一并删除。")) return;
   operationState.cleanupDisabledBusy = true;
   updateAccountSelectionState();
-  setAccountResult("actionResult", "正在清理已禁用账号，请稍候…");
+  setAccountResult("actionResult", "正在清理已禁用/邮箱失效账号，请稍候…");
   try {
     const result = await api("/api/accounts/disabled", {method: "DELETE"});
     selectedAccounts.clear();
-    setAccountResult("actionResult", `已清理 ${result.deleted || 0} 个禁用账号`);
+    setAccountResult("actionResult", `已清理 ${result.deleted || 0} 个禁用/邮箱失效账号`);
     await refreshData();
   } catch (error) {
     setAccountResult("actionResult", error.message);

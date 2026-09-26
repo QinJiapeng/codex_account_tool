@@ -529,13 +529,42 @@ class Repository:
         return {"requested": len(normalized), "deleted": existing, "skipped": len(normalized) - existing}
 
     def delete_disabled_accounts(self) -> dict[str, int]:
-        """Delete all accounts explicitly classified as deactivated."""
+        """Delete disabled accounts and accounts with unusable mailbox OAuth credentials."""
+
+        # Keep ordinary authorization failures (network errors, wrong
+        # passwords, and protocol changes) available for manual retry. Only
+        # terminal Microsoft mailbox signals are included in this cleanup.
+        mailbox_invalid = """
+            lower(status)='disabled'
+            OR (
+                lower(status)='failed'
+                AND (
+                    instr(lower(last_error), 'invalid_grant') > 0
+                    OR instr(lower(last_error), 'invalid_client') > 0
+                    OR instr(lower(last_error), 'unauthorized_client') > 0
+                    OR instr(lower(last_error), 'interaction_required') > 0
+                    OR instr(lower(last_error), 'consent_required') > 0
+                    OR instr(lower(last_error), 'refresh token has expired') > 0
+                    OR instr(lower(last_error), 'refresh token is invalid') > 0
+                    OR instr(lower(last_error), 'aadsts50057') > 0
+                    OR instr(lower(last_error), 'aadsts50173') > 0
+                    OR instr(lower(last_error), 'aadsts65001') > 0
+                    OR instr(lower(last_error), 'aadsts70000') > 0
+                    OR instr(lower(last_error), 'aadsts70008') > 0
+                    OR instr(lower(last_error), 'aadsts700016') > 0
+                    OR instr(lower(last_error), 'aadsts700082') > 0
+                    OR instr(lower(last_error), 'aadsts700084') > 0
+                    OR instr(lower(last_error), '邮箱失效') > 0
+                    OR instr(lower(last_error), '邮箱已禁用') > 0
+                )
+            )
+        """
 
         with self.db.connect() as connection:
             deleted = int(connection.execute(
-                "SELECT COUNT(*) FROM accounts WHERE lower(status)='disabled'"
+                f"SELECT COUNT(*) FROM accounts WHERE {mailbox_invalid}"
             ).fetchone()[0])
-            connection.execute("DELETE FROM accounts WHERE lower(status)='disabled'")
+            connection.execute(f"DELETE FROM accounts WHERE {mailbox_invalid}")
         return {"deleted": deleted}
 
     def save_upload_statuses(
