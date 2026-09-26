@@ -515,6 +515,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         use_proxy = str(use_proxy).lower() in {"1", "true", "yes", "on"} if not isinstance(use_proxy, bool) else use_proxy
         return await request.app.state.reauth.queue_accounts(ids_from_body(body), use_proxy=use_proxy)
 
+    @application.post("/api/reauth/queue-2fa")
+    async def queue_2fa_reauth(request: Request) -> dict[str, Any]:
+        """Queue only accounts that have a stored TOTP secret."""
+
+        body = await json_body(request)
+        use_proxy = body.get("use_proxy", request.app.state.settings.use_proxy_default)
+        use_proxy = str(use_proxy).lower() in {"1", "true", "yes", "on"} if not isinstance(use_proxy, bool) else use_proxy
+        requested_ids = ids_from_body(body)
+        matched_ids = request.app.state.repository.account_ids_with_totp(requested_ids)
+        result = await request.app.state.reauth.queue_accounts(matched_ids, use_proxy=use_proxy, require_totp=True)
+        result["matched"] = len(matched_ids)
+        result["requested"] = len(requested_ids) if requested_ids is not None else len(matched_ids)
+        return result
+
     @application.post("/api/reauth/retry-failed")
     async def retry_failed_reauth(request: Request) -> dict[str, Any]:
         """Retry only accounts whose latest authorization attempt failed."""

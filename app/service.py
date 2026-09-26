@@ -985,10 +985,16 @@ class ReauthService:
         *,
         use_proxy: bool = False,
         event_message: str = "",
+        require_totp: bool = False,
     ) -> dict[str, Any]:
         if account_ids is None:
-            accounts, _ = self.repository.list_accounts(limit=5000)
-            account_ids = [str(item["id"]) for item in accounts]
+            if require_totp:
+                account_ids = self.repository.account_ids_with_totp()
+            else:
+                accounts, _ = self.repository.list_accounts(limit=5000)
+                account_ids = [str(item["id"]) for item in accounts]
+        elif require_totp:
+            account_ids = self.repository.account_ids_with_totp(account_ids)
         queued = duplicate = skipped = 0
         disabled_skipped = 0
         jobs = []
@@ -1020,6 +1026,7 @@ class ReauthService:
             "skipped": skipped,
             "disabled_skipped": disabled_skipped,
             "use_proxy": bool(use_proxy),
+            "require_totp": bool(require_totp),
             "jobs": jobs,
         }
 

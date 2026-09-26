@@ -354,6 +354,7 @@ class Repository:
             "liveness_http_status": int(row["liveness_http_status"] or 0),
             "liveness_error_code": str(row["liveness_error_code"] or ""),
             "has_token": bool(row.get("has_token", 0) if isinstance(row, dict) else row["has_token"]),
+            "has_totp": bool(row["totp_secret"] or ""),
             "updated_at": row["updated_at"],
         }
 
@@ -625,6 +626,22 @@ class Repository:
     def pending_job_ids(self) -> list[str]:
         with self.db.connect() as connection:
             rows = connection.execute("SELECT id FROM jobs WHERE status='pending' ORDER BY created_at, id").fetchall()
+        return [str(row[0]) for row in rows]
+
+    def account_ids_with_totp(self, account_ids: Sequence[str] | None = None) -> list[str]:
+        """Return account IDs that have a locally stored TOTP secret."""
+
+        params: list[Any] = []
+        where = "WHERE totp_secret <> ''"
+        if account_ids is not None:
+            normalized = list(dict.fromkeys(str(value or "").strip() for value in account_ids if str(value or "").strip()))
+            if not normalized:
+                return []
+            marks = ",".join("?" for _ in normalized)
+            where += f" AND id IN ({marks})"
+            params.extend(normalized)
+        with self.db.connect() as connection:
+            rows = connection.execute(f"SELECT id FROM accounts {where} ORDER BY updated_at DESC, email", params).fetchall()
         return [str(row[0]) for row in rows]
 
     def recover_running_jobs(self) -> None:

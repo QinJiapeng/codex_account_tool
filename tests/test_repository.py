@@ -17,6 +17,7 @@ def test_account_list_does_not_return_credentials(tmp_path: Path):
     assert items[0]["email"] == "a@example.com"
     assert "password" not in items[0]
     assert "mailbox_refresh_token" not in items[0]
+    assert items[0]["has_totp"] is False
 
 
 def test_totp_secret_is_stored_for_auth_callback_but_not_public_list(tmp_path: Path):
@@ -32,7 +33,10 @@ def test_totp_secret_is_stored_for_auth_callback_but_not_public_list(tmp_path: P
     }])
     account = repository.get_account_by_email("mfa@example.com")
     assert account and account["totp_secret"] == "JBSWY3DPEHPK3PXP"
-    assert "totp_secret" not in repository.list_accounts()[0][0]
+    public = repository.list_accounts()[0][0]
+    assert "totp_secret" not in public
+    assert public["has_totp"] is True
+    assert repository.account_ids_with_totp() == [account["id"]]
 
 
 def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tmp_path: Path):

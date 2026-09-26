@@ -559,6 +559,12 @@ function updateAccountSelectionState() {
   $("reauthSelected").textContent = operationState.reauthBusy
     ? `重新授权中（${operationState.reauthTargetCount}）`
     : count ? `重新授权选中（${count}）` : "重新授权全部";
+  const reauthTotpButton = $("reauthTotp");
+  if (reauthTotpButton) {
+    reauthTotpButton.textContent = operationState.reauthBusy
+      ? `2FA 重新授权中（${operationState.reauthTargetCount}）`
+      : count ? `2FA 重新授权选中（${count}）` : "2FA 重新授权全部";
+  }
   $("quotaSelected").textContent = operationState.quotaBusy
     ? `刷新中（${operationState.quotaTargetCount}）`
     : count ? `刷新选中额度（${count}）` : "查询全部额度";
@@ -569,9 +575,14 @@ function updateAccountSelectionState() {
   const livenessButton = $("livenessSelected");
   const quotaButton = $("quotaSelected");
   reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  if (reauthTotpButton) reauthTotpButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   livenessButton.disabled = !hasAccounts || operationState.livenessBusy || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   reauthButton.classList.toggle("is-busy", operationState.reauthBusy);
+  if (reauthTotpButton) {
+    reauthTotpButton.classList.toggle("is-busy", operationState.reauthBusy);
+    reauthTotpButton.setAttribute("aria-busy", String(operationState.reauthBusy));
+  }
   livenessButton.classList.toggle("is-busy", operationState.livenessBusy);
   quotaButton.classList.toggle("is-busy", operationState.quotaBusy);
   reauthButton.setAttribute("aria-busy", String(operationState.reauthBusy));
@@ -767,14 +778,16 @@ $("proxyPage").onkeydown = (event) => {
 };
 
 async function runAccountAction(path) {
-  const kind = path === "/api/reauth/queue" ? "reauth" : "quota";
+  const isReauth = path === "/api/reauth/queue" || path === "/api/reauth/queue-2fa";
+  const isTotpReauth = path === "/api/reauth/queue-2fa";
+  const kind = isReauth ? "reauth" : "quota";
   const busyKey = `${kind}Busy`;
   if (operationState[busyKey]) return;
   const selected = selectedAccounts.size > 0;
   const ids = selected
     ? [...selectedAccounts]
     : [...accountSnapshot.values()].filter((account) => kind !== "quota" || account.has_token).map((account) => String(account.id));
-  const targetCount = selected ? ids.length : kind === "quota" ? accountAuthorizedTotal : accountGlobalTotal;
+  const targetCount = selected ? ids.length : kind === "quota" ? accountAuthorizedTotal : isTotpReauth ? "已配置 2FA 的账号" : accountGlobalTotal;
   operationState[busyKey] = true;
   operationState[`${kind}Ids`] = new Set(ids);
   operationState[`${kind}TargetCount`] = targetCount;
@@ -782,18 +795,23 @@ async function runAccountAction(path) {
   refreshAccountActivityCells();
   const requestedConnection = connectionModeSnapshot.useProxy ? "代理池模式" : "直连模式";
   setAccountResult("actionResult", kind === "reauth"
-    ? `正在以${requestedConnection}提交 ${targetCount} 个账号的重新授权，请稍候…`
+    ? (isTotpReauth
+      ? `正在以${requestedConnection}提交${selected ? ` ${targetCount} 个` : "全部已配置 2FA 的"}账号重新授权，请稍候…`
+      : `正在以${requestedConnection}提交 ${targetCount} 个账号的重新授权，请稍候…`)
     : `正在查询 ${targetCount} 个账号的额度，请稍候…`);
   const body = selected ? {ids} : {};
   try {
     const result = await api(path, {method: "POST", body: JSON.stringify(body)});
-    if (path === "/api/reauth/queue") {
-      const label = selected ? "已重新授权选中账号" : "已重新授权全部账号";
+    if (isReauth) {
+      const label = isTotpReauth
+        ? (selected ? "已提交选中 2FA 账号" : "已提交全部 2FA 账号")
+        : (selected ? "已重新授权选中账号" : "已重新授权全部账号");
       const connection = result.use_proxy ? "代理池模式" : "直连模式";
       const skipped = Number(result.skipped || 0);
       const disabledSkipped = Number(result.disabled_skipped || 0);
       const skippedText = skipped ? `，跳过 ${skipped} 个${disabledSkipped ? `（已禁用 ${disabledSkipped} 个）` : ""}` : "";
-      setAccountResult("actionResult", `${label}（${connection}）：加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个${skippedText}`);
+      const matchedText = isTotpReauth ? `匹配 ${result.matched || 0} 个，` : "";
+      setAccountResult("actionResult", `${label}（${connection}）：${matchedText}加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个${skippedText}`);
     } else {
       const label = selected ? "已刷新选中额度" : "额度查询完成";
       setAccountResult("actionResult", Array.isArray(result.results) && result.results.length
@@ -867,6 +885,7 @@ async function runTargetedAccountAction(path, label) {
 }
 
 $("reauthSelected").onclick = () => runAccountAction("/api/reauth/queue").catch((error) => { setAccountResult("actionResult", error.message); });
+$("reauthTotp").onclick = () => runAccountAction("/api/reauth/queue-2fa").catch((error) => { setAccountResult("actionResult", error.message); });
 $("livenessSelected").onclick = () => runLivenessAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedReauth").onclick = () => runTargetedAccountAction("/api/reauth/retry-failed", "重新授权失败账号");

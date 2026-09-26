@@ -697,6 +697,8 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="table-wrap account-table-wrap"' in html
     assert 'class="account-table"' in html
     assert 'id="reauthConnectionMode"' in html
+    assert 'id="reauthTotp"' in html
+    assert "/api/reauth/queue-2fa" in script
     assert 'class="account-action-label">账号操作' in html
     assert "验活状态" in html
     assert 'class="account-action-label">导出与上传' in html
