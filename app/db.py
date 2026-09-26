@@ -198,6 +198,14 @@ class Database:
                        OR instr(lower(last_error), 'account_disabled') > 0
                        OR instr(lower(last_error), 'account disabled') > 0
                        OR instr(lower(last_error), 'has been deleted or deactivated') > 0
+                       OR instr(lower(last_error), 'aadsts700016') > 0
+                       OR (
+                           instr(lower(last_error), 'application with identifier') > 0
+                           AND (
+                               instr(lower(last_error), 'not found in the directory') > 0
+                               OR instr(lower(last_error), 'not found in directory') > 0
+                           )
+                       )
                    )
                 """
             )

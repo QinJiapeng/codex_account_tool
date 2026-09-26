@@ -177,10 +177,15 @@ function renderJobs(jobs = {}) {
       connection = "代理池模式（旧任务未记录实际地址）";
       connectionTone = "waiting";
     }
-    const error = job.error ? `<div class="job-error"><b>失败原因</b><span>${escapeHtml(job.error)}</span></div>` : "";
+    const mailboxDisabled = status === "failed" && isMailboxAuthorizationUnavailable(job.error);
+    const error = job.error ? `<div class="job-error"><b>${mailboxDisabled ? "邮箱已禁用" : "失败原因"}</b><span>${escapeHtml(job.error)}</span></div>` : "";
     const operationLabel = operation === "totp_setup" ? "开通 2FA" : "重新授权";
-    return `<article class="job job-${tone}"><span class="job-icon" aria-hidden="true">${icon}</span><div class="job-account"><strong>${escapeHtml(job.email)}</strong><span class="job-operation">${operationLabel}</span><span class="job-connection job-connection-${connectionTone}">${escapeHtml(connection)}</span></div><div class="job-step"><span>当前步骤</span><strong>${escapeHtml(step)}</strong></div><span class="job-status job-status-${tone}">${escapeHtml(statusLabels[status] || status)}</span><time datetime="${escapeHtml(timeValue || "")}">${escapeHtml(time)}</time>${error}</article>`;
+    return `<article class="job job-${tone}"><span class="job-icon" aria-hidden="true">${icon}</span><div class="job-account"><strong>${escapeHtml(job.email)}</strong><span class="job-operation">${operationLabel}</span><span class="job-connection job-connection-${connectionTone}">${escapeHtml(connection)}</span></div><div class="job-step"><span>当前步骤</span><strong>${escapeHtml(step)}</strong></div><span class="job-status job-status-${tone}">${mailboxDisabled ? "邮箱已禁用" : escapeHtml(statusLabels[status] || status)}</span><time datetime="${escapeHtml(timeValue || "")}">${escapeHtml(time)}</time>${error}</article>`;
   }).join("") : `<div class="job-empty">暂无授权任务</div>`;
+}
+
+function isMailboxAuthorizationUnavailable(error) {
+  return /\bAADSTS700016\b/i.test(String(error || ""));
 }
 
 function quotaLimitTone(window) {
@@ -259,7 +264,8 @@ function accountStatusDisplay(account, activity = "") {
   const status = String(account.status || "pending").toLowerCase();
   const tone = ["success", "failed", "disabled", "running", "pending"].includes(status) ? status : "pending";
   const title = ["failed", "disabled"].includes(status) && account.last_error ? ` title="${escapeHtml(account.last_error)}"` : "";
-  return `<span class="account-status account-status-${tone}"${title}>${escapeHtml(statusLabels[status] || "待处理")}</span>`;
+  const label = status === "disabled" || (status === "failed" && isMailboxAuthorizationUnavailable(account.last_error)) ? "邮箱已禁用" : statusLabels[status] || "待处理";
+  return `<span class="account-status account-status-${tone}"${title}>${escapeHtml(label)}</span>`;
 }
 
 function totpStatusDisplay(account, activity = "") {

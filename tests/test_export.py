@@ -788,6 +788,8 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert '<td colspan="8">' in html
     assert "function totpStatusDisplay" in script
     assert 'class="totp-status-cell"' in script
+    assert "function isMailboxAuthorizationUnavailable" in script
+    assert 'mailboxDisabled ? "邮箱已禁用"' in script
     assert 'id="reauthConnectionMode"' in html
     assert 'id="authorizationType"' not in html
     assert 'id="authorizationAction"' in html

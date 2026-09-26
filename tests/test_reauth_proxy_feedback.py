@@ -5,8 +5,9 @@ import pytest
 import app.service as service_module
 from app.config import Settings
 from app.db import Database, Repository
+from app.outlook.mail import _oauth_failure_is_terminal
 from app.proxy import ProxyLease, ProxyPoolError
-from app.service import ReauthService, account_is_disabled_error, reauth_error_is_retryable
+from app.service import ReauthService, account_is_disabled_error, reauth_error_is_retryable, safe_error
 
 
 def _settings(data_dir: Path) -> Settings:
@@ -72,6 +73,19 @@ class DeactivatedReauthService(ReauthService):
         )
 
 
+class MissingOutlookApplicationReauthService(ReauthService):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = 0
+
+    def _reauthorize_sync(self, account: dict[str, object], proxy_url: str, job_id: str) -> dict[str, str]:
+        self.calls += 1
+        raise RuntimeError(
+            "AADSTS700016: Application with identifier 'fictional-client-id' "
+            "was not found in the directory 'fictional-tenant-id'."
+        )
+
+
 class TransientThenSuccessReauthService(ReauthService):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -102,6 +116,11 @@ def test_reauth_error_retry_classification():
     assert reauth_error_is_retryable(RuntimeError("登录请求失败: HTTP 503")) is True
     assert reauth_error_is_retryable(RuntimeError("登录失败: invalid_login")) is False
     assert reauth_error_is_retryable(RuntimeError("account_deactivated")) is False
+    assert account_is_disabled_error(RuntimeError("AADSTS700016: application not found")) is True
+    assert reauth_error_is_retryable(RuntimeError("AADSTS700016: application not found")) is False
+    assert _oauth_failure_is_terminal("invalid_grant", "AADSTS700016: application not found", 400) is True
+    assert _oauth_failure_is_terminal("invalid_grant", "AADSTS50196: request loop", 400) is False
+    assert safe_error("AADSTS700016: client fictional-client-id not found") == "AADSTS700016：Outlook 客户端 ID 或租户授权不可用"
 
 
 @pytest.mark.asyncio
@@ -212,6 +231,27 @@ async def test_reauth_marks_deactivated_account_disabled(tmp_path: Path):
     assert account_is_disabled_error(stored_account["last_error"])
     events = " ".join(item["message"] for item in repository.list_events(str(job["id"])))
     assert "检测到账号已禁用" in events
+
+
+@pytest.mark.asyncio
+async def test_missing_outlook_application_marks_mailbox_disabled_without_retry(tmp_path: Path):
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    account = _account(repository)
+    service = MissingOutlookApplicationReauthService(repository, _settings(tmp_path), FakeProxyPool())  # type: ignore[arg-type]
+    job = repository.create_job(str(account["id"]), False)
+    try:
+        await service._run(str(job["id"]), 0)
+    finally:
+        await service.stop()
+
+    stored_account = repository.get_account(str(account["id"]))
+    stored_job = repository.get_job(str(job["id"]))
+    assert service.calls == 1
+    assert stored_account and stored_account["status"] == "disabled"
+    assert stored_job and stored_job["status"] == "failed"
+    assert stored_account["last_error"] == stored_job["error"] == "AADSTS700016：Outlook 客户端 ID 或租户授权不可用"
+    assert "fictional-client-id" not in stored_job["error"]
 
 
 @pytest.mark.asyncio

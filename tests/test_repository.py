@@ -192,6 +192,30 @@ def test_initialize_migrates_deactivated_failures_to_disabled_status(tmp_path: P
     assert repository.account_ids_by_status("disabled") == [account["id"]]
 
 
+def test_initialize_migrates_missing_outlook_application_failure_to_disabled_status(tmp_path: Path):
+    database = Database(tmp_path / "tool.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([{
+        "email": "missing-app@example.com",
+        "password": "pw",
+        "client_id": "cid",
+        "mailbox_refresh_token": "a" * 20,
+    }])
+    account = repository.get_account_by_email("missing-app@example.com")
+    assert account
+    repository.update_account(
+        account["id"],
+        status="failed",
+        error="AADSTS700016: Application with identifier 'fictional-client-id' was not found in the directory",
+    )
+
+    database.initialize()
+
+    migrated = repository.get_account(account["id"])
+    assert migrated and migrated["status"] == "disabled"
+
+
 def test_import_preserves_disabled_status_and_cleanup_deletes_only_disabled_accounts(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()

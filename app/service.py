@@ -777,6 +777,8 @@ async def upload_sub2api_records(
 
 def safe_error(value: Any) -> str:
     text = str(value or "").replace("\r", " ").replace("\n", " ").strip()
+    if re.search(r"\bAADSTS700016\b", text, flags=re.I):
+        return "AADSTS700016：Outlook 客户端 ID 或租户授权不可用"
     text = re.sub(r"https?://\S+", "[redacted-url]", text, flags=re.I)
     text = re.sub(r"(?i)\bBearer\s+[^\s,;]+", "Bearer [redacted]", text)
     text = re.sub(r"(?i)\b(password|authorization|cookie|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|api[_ -]?key|management[_ -]?key)\s*[:=]\s*[^\s,;]+", r"\1=[redacted]", text)
@@ -788,6 +790,10 @@ def account_is_disabled_error(value: Any) -> bool:
     """Recognize explicit upstream signals that cannot be retried."""
 
     text = str(value or "").lower()
+    if "aadsts700016" in text:
+        return True
+    if "application with identifier" in text and ("not found in the directory" in text or "not found in directory" in text):
+        return True
     return any(marker in text for marker in (
         "account_deactivated",
         "account_disabled",
@@ -828,6 +834,7 @@ def reauth_error_is_retryable(value: Any) -> bool:
     if not text:
         return False
     terminal_markers = (
+        "aadsts700016",
         "unsupported_country_region_territory",
         "invalid_grant",
         "invalid_client",

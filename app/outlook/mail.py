@@ -132,6 +132,8 @@ def _oauth_failure_is_terminal(code: str, description: str, status: int) -> bool
     # moving the account to the invalid bucket.
     if re.search(r"AADSTS50196\b", description, re.IGNORECASE):
         return False
+    if re.search(r"AADSTS700016\b", description, re.IGNORECASE):
+        return True
     if normalized in OUTLOOK_TERMINAL_OAUTH_CODES:
         return True
     if re.search(r"AADSTS(?:50057|50173|65001|70000|70008|700082|700084)\b", description, re.IGNORECASE):
