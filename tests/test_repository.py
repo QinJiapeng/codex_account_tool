@@ -119,6 +119,25 @@ def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tm
     assert refreshed["liveness_checked_at"] == ""
 
 
+def test_failed_liveness_account_ids_only_include_retryable_states(tmp_path: Path):
+    database = Database(tmp_path / "liveness-retry.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "temporary@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "valid@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+        {"email": "invalid@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "c" * 20},
+    ])
+    accounts = {item["email"]: item for item in repository.list_accounts()[0]}
+    for item in accounts.values():
+        repository.save_token(item["id"], {"email": item["email"], "access_token": f"access-{item['email']}", "refresh_token": f"refresh-{item['email']}"})
+    repository.save_liveness_result(accounts["temporary@example.com"]["id"], {"success": False, "status": "temporary_failed", "http_status": 0})
+    repository.save_liveness_result(accounts["valid@example.com"]["id"], {"success": True, "status": "valid", "http_status": 200})
+    repository.save_liveness_result(accounts["invalid@example.com"]["id"], {"success": False, "status": "invalid", "http_status": 401})
+
+    assert repository.failed_liveness_account_ids() == [accounts["temporary@example.com"]["id"]]
+
+
 def test_account_list_supports_pagination_and_fuzzy_search(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()

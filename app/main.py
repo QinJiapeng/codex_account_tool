@@ -588,6 +588,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=safe_error(error)) from error
 
+    @application.post("/api/liveness/retry-failed")
+    async def retry_failed_liveness(request: Request) -> dict[str, Any]:
+        """Retry only accounts with a temporary or limited liveness failure."""
+
+        account_ids = request.app.state.repository.failed_liveness_account_ids()
+        try:
+            result = await request.app.state.scheduler.run_once(account_ids)
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=safe_error(error)) from error
+        result["matched"] = len(account_ids)
+        return result
+
     @application.get("/api/quotas")
     async def list_quotas(request: Request, limit: int = Query(200, ge=1, le=5000), offset: int = Query(0, ge=0)) -> dict[str, Any]:
         items, total = request.app.state.repository.list_quotas(limit, offset)

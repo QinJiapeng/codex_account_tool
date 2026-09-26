@@ -1024,6 +1024,21 @@ class Repository:
             ).fetchall()
         return [str(row["account_id"]) for row in rows]
 
+    def failed_liveness_account_ids(self) -> list[str]:
+        """Return authorized accounts with a retryable liveness failure."""
+
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.id
+                  FROM accounts AS a
+                  JOIN tokens AS t ON t.account_id=a.id
+                 WHERE lower(COALESCE(a.liveness_status, '')) IN ('temporary_failed', 'forbidden', 'rate_limited')
+                 ORDER BY a.liveness_checked_at DESC, a.id
+                """
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
     @staticmethod
     def plan_label(plan_type: Any) -> str:
         normalized = re.sub(r"[^a-z0-9]+", "_", str(plan_type or "").strip().lower()).strip("_")

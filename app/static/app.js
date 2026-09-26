@@ -59,6 +59,7 @@ const operationState = {
   totpSetupTargetCount: 0,
   targetedReauthBusy: false,
   targetedTotpSetupBusy: false,
+  targetedLivenessBusy: false,
   livenessBusy: false,
   livenessIds: new Set(),
   livenessTargetCount: 0,
@@ -68,6 +69,54 @@ const operationState = {
   targetedQuotaBusy: false,
   cleanupDisabledBusy: false,
 };
+
+const accountOperationConfig = {
+  reauth: {
+    allLabel: "重新授权全部",
+    selectedLabel: "重新授权选中",
+    busyLabel: "重新授权中",
+    retryLabel: "重试重新授权失败",
+    busyKey: "reauthBusy",
+    targetedBusyKey: "targetedReauthBusy",
+    allPath: "/api/reauth/queue",
+    retryPath: "/api/reauth/retry-failed",
+  },
+  totp_setup: {
+    allLabel: "开通 2FA 全部",
+    selectedLabel: "开通 2FA 选中",
+    busyLabel: "开通 2FA 中",
+    retryLabel: "重试开通 2FA 失败",
+    busyKey: "totpSetupBusy",
+    targetedBusyKey: "targetedTotpSetupBusy",
+    allPath: "/api/accounts/2fa/setup",
+    retryPath: "/api/accounts/2fa/retry-failed",
+  },
+  quota: {
+    allLabel: "查询全部额度",
+    selectedLabel: "刷新选中额度",
+    busyLabel: "刷新额度中",
+    retryLabel: "重试刷新额度失败",
+    busyKey: "quotaBusy",
+    targetedBusyKey: "targetedQuotaBusy",
+    allPath: "/api/quotas/refresh",
+    retryPath: "/api/quotas/refresh-failed",
+  },
+  liveness: {
+    allLabel: "验活全部",
+    selectedLabel: "验活选中",
+    busyLabel: "验活中",
+    retryLabel: "重试验活失败",
+    busyKey: "livenessBusy",
+    targetedBusyKey: "targetedLivenessBusy",
+    allPath: "/api/liveness/run",
+    retryPath: "/api/liveness/retry-failed",
+  },
+};
+
+function selectedAccountOperation() {
+  const type = String($("retryAuthorizationType")?.value || "reauth");
+  return accountOperationConfig[type] ? type : "reauth";
+}
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (char) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"}[char]));
@@ -588,56 +637,30 @@ function updateAccountSelectionState() {
   const count = selectedAccounts.size;
   const hasAccounts = accountGlobalTotal > 0 || count > 0;
   $("selectionCount").textContent = count ? `已选择 ${count} 个账号` : "未选择账号";
+  const operationType = selectedAccountOperation();
+  const operation = accountOperationConfig[operationType];
+  const operationBusy = Boolean(operationState[operation.busyKey]);
+  const operationTargetCount = operationState[`${operationType === "totp_setup" ? "totpSetup" : operationType}TargetCount`] || 0;
   const authorizationAction = $("authorizationAction");
-  const totpSetupAction = $("totpSetupAction");
-  if (authorizationAction) {
-    authorizationAction.textContent = operationState.reauthBusy
-      ? `重新授权中（${operationState.reauthTargetCount}）`
-      : count ? `重新授权选中（${count}）` : "重新授权全部";
-  }
-  if (totpSetupAction) {
-    totpSetupAction.textContent = operationState.totpSetupBusy
-      ? `开通 2FA 中（${operationState.totpSetupTargetCount}）`
-      : count ? `开通 2FA 选中（${count}）` : "开通 2FA 全部";
-  }
-  $("quotaSelected").textContent = operationState.quotaBusy
-    ? `刷新中（${operationState.quotaTargetCount}）`
-    : count ? `刷新选中额度（${count}）` : "查询全部额度";
-  $("livenessSelected").textContent = operationState.livenessBusy
-    ? `验活中（${operationState.livenessTargetCount}）`
-    : count ? `验活选中（${count}）` : "一键验活";
-  const livenessButton = $("livenessSelected");
-  const quotaButton = $("quotaSelected");
-  const anyAccountOperationBusy = operationState.reauthBusy || operationState.totpSetupBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedTotpSetupBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  const allLabel = operationBusy
+    ? `${operation.busyLabel}（${operationTargetCount}）`
+    : count ? `${operation.selectedLabel}（${count}）` : operation.allLabel;
+  if (authorizationAction) authorizationAction.textContent = allLabel;
+  const anyAccountOperationBusy = operationState.reauthBusy || operationState.totpSetupBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedTotpSetupBusy || operationState.targetedLivenessBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   if (authorizationAction) authorizationAction.disabled = !hasAccounts || anyAccountOperationBusy;
-  if (totpSetupAction) totpSetupAction.disabled = !hasAccounts || anyAccountOperationBusy;
-  livenessButton.disabled = !hasAccounts || anyAccountOperationBusy;
-  quotaButton.disabled = !hasAccounts || anyAccountOperationBusy;
   if (authorizationAction) {
-    authorizationAction.classList.toggle("is-busy", operationState.reauthBusy);
-    authorizationAction.setAttribute("aria-busy", String(operationState.reauthBusy));
+    authorizationAction.classList.toggle("is-busy", operationBusy);
+    authorizationAction.setAttribute("aria-busy", String(operationBusy));
   }
-  if (totpSetupAction) {
-    totpSetupAction.classList.toggle("is-busy", operationState.totpSetupBusy);
-    totpSetupAction.setAttribute("aria-busy", String(operationState.totpSetupBusy));
-  }
-  livenessButton.classList.toggle("is-busy", operationState.livenessBusy);
-  quotaButton.classList.toggle("is-busy", operationState.quotaBusy);
-  livenessButton.setAttribute("aria-busy", String(operationState.livenessBusy));
-  quotaButton.setAttribute("aria-busy", String(operationState.quotaBusy));
   const retryAuthorizationType = $("retryAuthorizationType");
   const retryAuthorizationButton = $("retryFailedAuthorization");
-  const retryType = String(retryAuthorizationType?.value || "reauth");
-  const retryBusy = retryType === "totp_setup"
-    ? operationState.targetedTotpSetupBusy
-    : retryType === "quota" ? operationState.targetedQuotaBusy : operationState.targetedReauthBusy;
-  const retryLabel = retryType === "totp_setup"
-    ? "重试开通 2FA 失败"
-    : retryType === "quota" ? "重试刷新额度失败" : "重试重新授权失败";
+  const retryType = selectedAccountOperation();
+  const retryOperation = accountOperationConfig[retryType];
+  const retryBusy = Boolean(operationState[retryOperation.targetedBusyKey]);
   if (retryAuthorizationType) retryAuthorizationType.disabled = !hasAccounts || anyAccountOperationBusy;
   if (retryAuthorizationButton) {
     retryAuthorizationButton.disabled = !hasAccounts || anyAccountOperationBusy;
-    retryAuthorizationButton.textContent = retryBusy ? "重试失败任务中…" : retryLabel;
+    retryAuthorizationButton.textContent = retryBusy ? `${retryOperation.retryLabel}中…` : retryOperation.retryLabel;
     retryAuthorizationButton.classList.toggle("is-busy", retryBusy);
     retryAuthorizationButton.setAttribute("aria-busy", String(retryBusy));
   }
@@ -925,10 +948,20 @@ async function runLivenessAction() {
   }
 }
 
+function runSelectedAccountAction() {
+  const type = selectedAccountOperation();
+  if (type === "totp_setup") return runTotpSetupAction();
+  if (type === "liveness") return runLivenessAction();
+  return runAccountAction(accountOperationConfig[type].allPath);
+}
+
 async function runTargetedAccountAction(path, label) {
   const isReauth = path === "/api/reauth/retry-failed";
   const isTotpSetup = path === "/api/accounts/2fa/retry-failed";
-  const busyKey = isReauth ? "targetedReauthBusy" : isTotpSetup ? "targetedTotpSetupBusy" : "targetedQuotaBusy";
+  const isLiveness = path === "/api/liveness/retry-failed";
+  const busyKey = isReauth
+    ? "targetedReauthBusy"
+    : isTotpSetup ? "targetedTotpSetupBusy" : isLiveness ? "targetedLivenessBusy" : "targetedQuotaBusy";
   const button = $("retryFailedAuthorization");
   if (!button || button.disabled) return;
   operationState[busyKey] = true;
@@ -939,6 +972,8 @@ async function runTargetedAccountAction(path, label) {
     const matched = Number(result.matched || 0);
     if (isReauth || isTotpSetup) {
       setAccountResult("actionResult", `${label}：匹配 ${matched} 个，加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个`);
+    } else if (isLiveness) {
+      setAccountResult("actionResult", `${label}：检查 ${result.checked || 0} 个，有效 ${result.valid || 0} 个，失效 ${result.invalid || 0} 个，临时失败 ${result.temporary_failed || 0} 个`);
     } else {
       const completed = Array.isArray(result.results) ? result.results.length : 0;
       setAccountResult("actionResult", `${label}：匹配 ${matched} 个，完成 ${completed} 个`);
@@ -953,20 +988,12 @@ async function runTargetedAccountAction(path, label) {
 }
 
 function runRetryAuthorizationAction() {
-  const type = String($("retryAuthorizationType")?.value || "reauth");
-  const actions = {
-    reauth: ["/api/reauth/retry-failed", "重试重新授权失败账号"],
-    totp_setup: ["/api/accounts/2fa/retry-failed", "重试开通 2FA 失败账号"],
-    quota: ["/api/quotas/refresh-failed", "重试刷新额度失败账号"],
-  };
-  const [path, label] = actions[type] || actions.reauth;
-  return runTargetedAccountAction(path, label);
+  const type = selectedAccountOperation();
+  const operation = accountOperationConfig[type];
+  return runTargetedAccountAction(operation.retryPath, operation.retryLabel);
 }
 
-$("authorizationAction").onclick = () => runAccountAction("/api/reauth/queue").catch((error) => { setAccountResult("actionResult", error.message); });
-$("totpSetupAction").onclick = () => runTotpSetupAction().catch((error) => { setAccountResult("actionResult", error.message); });
-$("livenessSelected").onclick = () => runLivenessAction().catch((error) => { setAccountResult("actionResult", error.message); });
-$("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
+$("authorizationAction").onclick = () => runSelectedAccountAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedAuthorization").onclick = () => runRetryAuthorizationAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryAuthorizationType").onchange = () => updateAccountSelectionState();
 $("clearDisabledAccounts").onclick = async () => {
@@ -1026,7 +1053,7 @@ async function uploadAccounts(path, label) {
   const skipText = skipped ? `，跳过已上传 ${skipped}` : "";
   const summary = `${label}完成：成功 ${result.uploaded || 0}，失败 ${result.failed || 0}${skipText}`;
   const refreshed = await refreshData({showError: false});
-  setAccountResult("exportResult", refreshed ? summary : `${summary}（列表刷新失败，请稍后点击“查询全部额度”或刷新页面）`);
+  setAccountResult("exportResult", refreshed ? summary : `${summary}（列表刷新失败，请稍后选择“刷新额度”执行全部操作或刷新页面）`);
 }
 $("exportAccounts").onclick = () => downloadAccounts().catch((error) => { setAccountResult("exportResult", error.message); });
 $("uploadCpa").onclick = () => uploadAccounts("/api/accounts/upload-cpa", "CPA 上传").catch((error) => { setAccountResult("exportResult", error.message); });

@@ -686,6 +686,39 @@ def test_manual_liveness_route_accepts_selected_accounts(tmp_path: Path, monkeyp
     assert calls == [["account-1", "account-2"]]
 
 
+def test_retry_failed_liveness_route_uses_retryable_account_ids(tmp_path: Path, monkeypatch):
+    settings = Settings(
+        host="127.0.0.1",
+        port=10717,
+        data_dir=tmp_path,
+        worker_count=1,
+        use_proxy_default=False,
+        proxy_lease_seconds=60,
+        proxy_cooldown_seconds=5,
+        outlook_imap_host="outlook.example",
+        outlook_imap_port=993,
+        otp_poll_seconds=2,
+        otp_timeout_seconds=30,
+        quota_timeout_ms=1000,
+        usage_url="https://usage.example",
+        usage_version="test",
+    )
+    calls: list[list[str] | None] = []
+
+    async def fake_run_once(self, account_ids=None):
+        calls.append(account_ids)
+        return {"status": "success", "checked": len(account_ids or []), "valid": 1, "invalid": 0, "temporary_failed": 0, "queued": 0}
+
+    monkeypatch.setattr(Repository, "failed_liveness_account_ids", lambda self: ["failed-liveness-1"])
+    monkeypatch.setattr(ScheduledLivenessService, "run_once", fake_run_once)
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/liveness/retry-failed", json={})
+
+    assert response.status_code == 200
+    assert response.json()["matched"] == 1
+    assert calls == [["failed-liveness-1"]]
+
+
 def test_setup_2fa_route_passes_selected_ids_and_returns_queue_summary(tmp_path: Path, monkeypatch):
     settings = Settings(
         host="127.0.0.1",
@@ -793,10 +826,13 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'id="reauthConnectionMode"' in html
     assert 'id="authorizationType"' not in html
     assert 'id="authorizationAction"' in html
-    assert 'id="totpSetupAction"' in html
     assert 'id="retryAuthorizationType"' in html
     assert 'id="retryFailedAuthorization"' in html
-    assert '<option value="quota">刷新额度失败</option>' in html
+    assert '<option value="liveness">验活</option>' in html
+    assert 'id="totpSetupAction"' not in html
+    assert 'id="livenessSelected"' not in html
+    assert 'id="quotaSelected"' not in html
+    assert '<option value="quota">刷新额度</option>' in html
     assert 'id="retryFailedQuota"' not in html
     assert '<option value="2fa">2FA 三段 TXT</option>' in html
     assert '/api/reauth/queue"' in script
@@ -808,7 +844,6 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="account-action-label">导出与上传' in html
     assert 'id="forceUpload"' in html
     assert 'id="clearDisabledAccounts"' in html
-    assert 'id="livenessSelected"' in html
     assert '<option value="disabled">已禁用</option>' in html
     assert '/api/accounts/disabled' in script
     assert "强制重传" in html
@@ -819,6 +854,7 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert "代理未领取成功" in script
     assert '/api/quotas/progress' in script
     assert '/api/liveness/run' in script
+    assert '/api/liveness/retry-failed' in script
     assert 'class="card jobs-card"' in html
     assert 'id="jobStats"' in html
     assert 'scheduler-workbench-card' in html
