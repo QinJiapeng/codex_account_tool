@@ -72,6 +72,10 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
     assert "mail-password" not in content.decode("latin1")
     assert "mailbox-refresh-token" not in content.decode("latin1")
 
+    with_totp = {**record, "totp_secret": "JBSWY3DPEHPK3PXP"}
+    content, _, _ = service.build_export_document([with_totp], "four-segment")
+    assert content.decode("utf-8-sig").strip().endswith("----JBSWY3DPEHPK3PXP")
+
     content, media_type, filename = service.build_export_document([_sub2api_record()], "sub2api")
     assert media_type == "application/zip"
     assert filename == "sub2api-1-accounts.zip"

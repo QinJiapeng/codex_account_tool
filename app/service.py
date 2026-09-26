@@ -239,14 +239,19 @@ def build_export_document(records: Sequence[Mapping[str, Any]], format: str = "c
     if selected == "four-segment":
         lines: list[str] = []
         for record in rows:
-            fields = (
+            fields = [
                 str(record.get("email") or "").strip(),
                 str(record.get("password") or "").strip(),
                 str(record.get("client_id") or "").strip(),
                 str(record.get("mailbox_refresh_token") or "").strip(),
-            )
+            ]
             if not all(fields):
                 raise ValueError(f"{fields[0] or '账号'} 缺少邮箱四段凭据")
+            totp_secret = _normalize_totp_secret(record.get("totp_secret"))
+            if record.get("totp_secret") and not totp_secret:
+                raise ValueError(f"{fields[0] or '账号'} 的 2FA 密钥格式无效")
+            if totp_secret:
+                fields.append(totp_secret)
             lines.append("----".join(fields))
         content = ("\ufeff" + "\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
         return content, "text/plain; charset=utf-8", f"codex-account-four-segment-{len(lines)}.txt"
@@ -823,27 +828,41 @@ def reauth_error_is_retryable(value: Any) -> bool:
     return any(marker in text for marker in transient_markers)
 
 
-def parse_four_segment_line(value: str) -> dict[str, str] | None:
-    """Parse only ``email----password----client_id----refresh_token``.
+def _normalize_totp_secret(value: Any) -> str:
+    """Normalize a Base32 TOTP key without exposing it in error messages."""
 
-    Email-only lines and six-field exports are intentionally rejected in v1;
-    this keeps the first import contract explicit and prevents credentials
-    from another application being silently misinterpreted.
+    normalized = re.sub(r"[\s=]", "", str(value or "")).upper()
+    return normalized if re.fullmatch(r"[A-Z2-7]{16,128}", normalized or "") else ""
+
+
+def parse_four_segment_line(value: str) -> dict[str, str] | None:
+    """Parse Outlook credentials with an optional fifth TOTP field.
+
+    The original four-field format remains valid. A fifth Base32 field is
+    stored for existing-account 2FA reauthorization.
     """
 
     raw = str(value or "").strip()
     if not raw or raw.startswith("#"):
         return None
     parts = [part.strip() for part in raw.split("----")]
-    if len(parts) != 4:
+    if len(parts) not in {4, 5}:
         return None
-    email, password, client_id, mailbox_refresh_token = parts
+    email, password, client_id, mailbox_refresh_token = parts[:4]
     email = email.lower()
     if not re.fullmatch(r"[^@\s]+@[^@\s]+", email):
         return None
-    if not password or not client_id or len(mailbox_refresh_token) < 20:
+    if not password:
         return None
-    return {"email": email, "password": password, "client_id": client_id, "mailbox_refresh_token": mailbox_refresh_token}
+    if not client_id or len(mailbox_refresh_token) < 20:
+        return None
+    record = {"email": email, "password": password, "client_id": client_id, "mailbox_refresh_token": mailbox_refresh_token}
+    if len(parts) == 5:
+        totp_secret = _normalize_totp_secret(parts[4])
+        if not totp_secret:
+            return None
+        record["totp_secret"] = totp_secret
+    return record
 
 
 def parse_import_text(text: str) -> tuple[list[dict[str, str]], int, int]:
@@ -1187,7 +1206,11 @@ class ReauthService:
 
     def _reauthorize_sync(self, account: dict[str, Any], proxy_url: str, job_id: str) -> dict[str, Any]:
         self.repository.add_event(job_id, "info", "正在执行协议登录")
-        flow = AuthFlow(ProtocolConfig(proxy=proxy_url or None), env_overrides={"OAUTH_CODEX_RT_EXCHANGE": "1", "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1", "OAUTH_REQUIRE_REFRESH_TOKEN": "1", "OAUTH_TOKEN_EXCHANGE_FROM_CALLBACK": "0", "OAUTH_SECONDARY_AUTHORIZE_EXCHANGE": "0", "OAUTH_REFRESH_ONLY": "0", "OTP_TIMEOUT": str(self.settings.otp_timeout_seconds)})
+        flow = AuthFlow(
+            ProtocolConfig(proxy=proxy_url or None),
+            env_overrides={"OAUTH_CODEX_RT_EXCHANGE": "1", "OAUTH_CODEX_RT_BEFORE_CALLBACK": "1", "OAUTH_REQUIRE_REFRESH_TOKEN": "1", "OAUTH_TOKEN_EXCHANGE_FROM_CALLBACK": "0", "OAUTH_SECONDARY_AUTHORIZE_EXCHANGE": "0", "OAUTH_REFRESH_ONLY": "0", "OTP_TIMEOUT": str(self.settings.otp_timeout_seconds)},
+            account_callback=lambda email: self.repository.get_account_by_email(email) or {},
+        )
         provider = ReauthMailProvider(account=account, repository=self.repository, settings=self.settings, proxy_url=proxy_url, emit=lambda level, message: self.repository.add_event(job_id, level, safe_error(message)), cancel_check=lambda: self._stopping)
         result = flow.run_protocol_login(provider, str(account["email"]), str(account["password"]))
         payload = result.to_dict()

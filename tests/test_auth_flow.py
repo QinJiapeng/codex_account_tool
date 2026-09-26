@@ -96,3 +96,25 @@ def test_session_dump_replaces_oauth_credentials_only_as_a_pair():
     assert flow.result.access_token == "new-oauth-access"
     assert flow.result.refresh_token == "new-oauth-refresh"
     assert flow.result.id_token == "new-oauth-id"
+
+
+def test_totp_mfa_completion_issues_challenge_and_submits_factor(monkeypatch):
+    flow = AuthFlow(Config())
+    flow.result.totp_secret = "JBSWY3DPEHPK3PXP"
+    calls = []
+    monkeypatch.setattr(flow, "issue_mfa_challenge", lambda factor_id: calls.append(("issue", factor_id)) or {})
+    monkeypatch.setattr(
+        flow,
+        "submit_mfa_totp",
+        lambda code, factor_id: calls.append(("verify", code, factor_id)) or {"continue_url": "https://auth.openai.com/callback"},
+    )
+    response, continue_url = flow.complete_mfa_totp(
+        {"oai-client-auth-session": {"mfa_challenge_factors": [{"factor_type": "totp", "id": "factor-1"}]}},
+        "https://auth.openai.com/mfa-challenge/factor-1",
+        "mfa@example.com",
+    )
+    assert calls[0] == ("issue", "factor-1")
+    assert calls[1][0] == "verify" and calls[1][2] == "factor-1"
+    assert len(calls[1][1]) == 6 and calls[1][1].isdigit()
+    assert response["continue_url"].endswith("callback")
+    assert continue_url.endswith("callback")

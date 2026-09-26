@@ -974,30 +974,8 @@ class AuthFlow:
 
         # mfa-challenge 分支（密码验证后需要 TOTP 2FA）
         if self._is_mfa_challenge_state(page_type, continue_url):
-            totp_secret = (self.result.totp_secret or "").strip()
-            if not totp_secret and self._account_callback:
-                # 从数据库加载凭证
-                try:
-                    cred = self._account_callback(email)
-                    if cred and cred.get("totp_secret"):
-                        totp_secret = cred["totp_secret"]
-                        self.result.totp_secret = totp_secret
-                        logger.info("已从数据库加载 totp_secret")
-                except Exception as e:
-                    logger.warning(f"account_callback 异常: {e}")
-            if not totp_secret:
-                logger.warning("进入 mfa-challenge 但没有 totp_secret，无法继续")
-                return continue_url or ""
-            # 从 continue_url 提取 challenge_id
-            challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in continue_url else ""
-            if not challenge_id:
-                logger.warning("无法从 continue_url 提取 challenge_id")
-                return continue_url or ""
-            # 计算当前 TOTP 码并提交
-            totp_code = _totp_now(totp_secret)
-            logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
-            mfa_resp = self.submit_mfa_totp(totp_code, challenge_id)
-            continue_url = self._normalize_continue_url(self._extract_continue_url_from_step(mfa_resp))
+            step, continue_url = self.complete_mfa_totp(step, continue_url, email)
+            page_type = self._extract_page_type(step)
 
         need_otp = (page_type == "email_otp_verification") or ("/email-verification" in (continue_url or ""))
         if need_otp:
@@ -1890,6 +1868,79 @@ class AuthFlow:
         except Exception:
             return {}
 
+    def issue_mfa_challenge(self, factor_id: str) -> dict:
+        """Issue the server-side TOTP challenge before submitting a code."""
+
+        headers = self._common_headers("https://auth.openai.com/mfa-challenge")
+        headers["Content-Type"] = "application/json"
+        if self._last_sentinel_token:
+            headers["openai-sentinel-token"] = self._last_sentinel_token
+        if getattr(self, "_last_sentinel_so_token", ""):
+            headers["openai-sentinel-so-token"] = self._last_sentinel_so_token
+        resp = self.session.post(
+            "https://auth.openai.com/api/accounts/mfa/issue_challenge",
+            headers=headers,
+            json={"type": "totp", "id": factor_id, "force_fresh_challenge": False},
+            timeout=30,
+        )
+        self._trace_http("issue_mfa_challenge", resp)
+        if resp.status_code != 200:
+            raise RuntimeError(f"TOTP challenge 初始化失败: {_safe_http_error_summary(resp)}")
+        try:
+            return resp.json()
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _extract_mfa_factor_id(step: dict | None) -> str:
+        """Extract the TOTP factor id from the auth session payload."""
+
+        if not isinstance(step, dict):
+            return ""
+        session = step.get("oai-client-auth-session") or {}
+        if not isinstance(session, dict):
+            return ""
+        factors = []
+        for key in ("mfa_challenge_factors", "mfa_factors"):
+            values = session.get(key)
+            if isinstance(values, list):
+                factors.extend(values)
+        for factor in factors:
+            if not isinstance(factor, dict):
+                continue
+            factor_type = str(factor.get("factor_type") or factor.get("type") or "").lower()
+            factor_id = str(factor.get("id") or "").strip()
+            if factor_id and (not factor_type or factor_type == "totp"):
+                return factor_id
+        return ""
+
+    def complete_mfa_totp(self, step: dict | None, continue_url: str, email: str) -> tuple[dict, str]:
+        """Complete a TOTP challenge using the configured account secret."""
+
+        totp_secret = re.sub(r"[\s=]", "", str(self.result.totp_secret or "")).upper()
+        if not totp_secret and self._account_callback:
+            try:
+                cred = self._account_callback(email) or {}
+                totp_secret = re.sub(r"[\s=]", "", str(cred.get("totp_secret") or "")).upper()
+                if totp_secret:
+                    self.result.totp_secret = totp_secret
+            except Exception as error:
+                logger.warning("account_callback 加载 2FA 密钥异常: %s", type(error).__name__)
+        if not totp_secret:
+            raise RuntimeError("账号需要 2FA 验证，但未配置 TOTP 密钥")
+        if not re.fullmatch(r"[A-Z2-7]{16,128}", totp_secret):
+            raise RuntimeError("账号需要 2FA 验证，但 TOTP 密钥格式无效")
+        factor_id = self._extract_mfa_factor_id(step)
+        if not factor_id and "/mfa-challenge/" in (continue_url or ""):
+            factor_id = continue_url.rstrip("/").split("/")[-1]
+        if not factor_id:
+            raise RuntimeError("账号需要 2FA 验证，但响应缺少 TOTP 因子")
+        self.issue_mfa_challenge(factor_id)
+        code = _totp_now(totp_secret)
+        logger.info("提交 TOTP 码进行 2FA 验证（factor_id=%s...）", factor_id[:16])
+        response = self.submit_mfa_totp(code, factor_id)
+        return response, self._normalize_continue_url(self._extract_continue_url_from_step(response))
+
     # ── Step 8: 验证 OTP ──
     def verify_otp(self, otp_code: str) -> dict:
         logger.info("[7/10] 验证 OTP...")
@@ -2633,31 +2684,8 @@ class AuthFlow:
 
                     # mfa-challenge 分支（密码验证后需要 TOTP 2FA）
                     if self._is_mfa_challenge_state(page_type, continue_url):
-                        totp_secret = (self.result.totp_secret or "").strip()
-                        if not totp_secret and self._account_callback:
-                            # 从数据库加载凭证
-                            try:
-                                cred = self._account_callback(email)
-                                if cred and cred.get("totp_secret"):
-                                    totp_secret = cred["totp_secret"]
-                                    self.result.totp_secret = totp_secret
-                                    logger.info("已从数据库加载 totp_secret")
-                            except Exception as e:
-                                logger.warning(f"account_callback 异常: {e}")
-                        if not totp_secret:
-                            logger.warning("进入 mfa-challenge 但没有 totp_secret，无法继续")
-                        else:
-                            challenge_id = continue_url.split("/")[-1] if "/mfa-challenge/" in continue_url else ""
-                            if challenge_id:
-                                totp_code = _totp_now(totp_secret)
-                                logger.info(f"提交 TOTP 码进行 2FA 验证（challenge_id={challenge_id[:16]}...）")
-                                mfa_resp = self.submit_mfa_totp(totp_code, challenge_id)
-                                page_type = (self._extract_page_type(mfa_resp) or "").lower()
-                                continue_url = self._normalize_continue_url(
-                                    self._extract_continue_url_from_step(mfa_resp)
-                                )
-                            else:
-                                logger.warning("无法从 continue_url 提取 challenge_id")
+                        login_resp, continue_url = self.complete_mfa_totp(login_resp, continue_url, email)
+                        page_type = (self._extract_page_type(login_resp) or "").lower()
 
                 elif page_type == "email_otp_verification" or "/email-verification" in (continue_url or ""):
                     logger.info("登录分支: email_otp_verification")

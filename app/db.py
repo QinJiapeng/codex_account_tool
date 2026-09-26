@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     password TEXT NOT NULL,
     client_id TEXT NOT NULL,
     mailbox_refresh_token TEXT NOT NULL,
+    totp_secret TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     last_error TEXT NOT NULL DEFAULT '',
     last_authorized_at TEXT,
@@ -178,6 +179,8 @@ class Database:
                 connection.execute("ALTER TABLE accounts ADD COLUMN liveness_http_status INTEGER NOT NULL DEFAULT 0")
             if "liveness_error_code" not in account_columns:
                 connection.execute("ALTER TABLE accounts ADD COLUMN liveness_error_code TEXT NOT NULL DEFAULT ''")
+            if "totp_secret" not in account_columns:
+                connection.execute("ALTER TABLE accounts ADD COLUMN totp_secret TEXT NOT NULL DEFAULT ''")
             # Preserve previously observed deactivated accounts as a distinct
             # state after upgrading.  Older versions stored every authorization
             # error as ``failed``, which caused these terminal accounts to be
@@ -363,16 +366,17 @@ class Repository:
                 account_id = str(existing["id"]) if existing else str(record.get("id") or uuid.uuid4().hex)
                 connection.execute(
                     """
-                    INSERT INTO accounts(id,email,password,client_id,mailbox_refresh_token,status,last_error,created_at,updated_at)
-                    VALUES(?,?,?,?,?,'pending','',?,?)
+                    INSERT INTO accounts(id,email,password,client_id,mailbox_refresh_token,totp_secret,status,last_error,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,'pending','',?,?)
                     ON CONFLICT(email) DO UPDATE SET
                       password=excluded.password, client_id=excluded.client_id,
                       mailbox_refresh_token=excluded.mailbox_refresh_token,
+                      totp_secret=CASE WHEN excluded.totp_secret<>'' THEN excluded.totp_secret ELSE accounts.totp_secret END,
                       status=CASE WHEN accounts.status IN ('running','disabled') THEN accounts.status ELSE 'pending' END,
                       last_error=CASE WHEN accounts.status='disabled' THEN accounts.last_error ELSE '' END,
                       updated_at=excluded.updated_at
                     """,
-                    (account_id, record["email"], record["password"], record["client_id"], record["mailbox_refresh_token"], now, now),
+                    (account_id, record["email"], record["password"], record["client_id"], record["mailbox_refresh_token"], record.get("totp_secret", ""), now, now),
                 )
                 if existing:
                     updated += 1
@@ -768,7 +772,7 @@ class Repository:
             rows = connection.execute(
                 f"""
                 SELECT a.id, a.email, a.password, a.client_id,
-                       a.mailbox_refresh_token, t.access_token,
+                       a.mailbox_refresh_token, a.totp_secret, t.access_token,
                        t.refresh_token, t.id_token, t.payload_json,
                        t.updated_at AS token_updated_at
                 FROM accounts AS a
@@ -806,6 +810,7 @@ class Repository:
                 "password": str(row["password"] or ""),
                 "client_id": str(row["client_id"] or ""),
                 "mailbox_refresh_token": str(row["mailbox_refresh_token"] or ""),
+                "totp_secret": str(row["totp_secret"] or ""),
                 "token": safe_payload,
                 "token_updated_at": str(row["token_updated_at"] or ""),
             })

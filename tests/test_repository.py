@@ -19,6 +19,22 @@ def test_account_list_does_not_return_credentials(tmp_path: Path):
     assert "mailbox_refresh_token" not in items[0]
 
 
+def test_totp_secret_is_stored_for_auth_callback_but_not_public_list(tmp_path: Path):
+    database = Database(tmp_path / "totp.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([{
+        "email": "mfa@example.com",
+        "password": "pw",
+        "client_id": "client-id",
+        "mailbox_refresh_token": "abcdefghijklmnopqrst",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }])
+    account = repository.get_account_by_email("mfa@example.com")
+    assert account and account["totp_secret"] == "JBSWY3DPEHPK3PXP"
+    assert "totp_secret" not in repository.list_accounts()[0][0]
+
+
 def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tmp_path: Path):
     database = Database(tmp_path / "liveness.db")
     database.initialize()

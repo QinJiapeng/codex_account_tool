@@ -20,7 +20,7 @@ QQ 交流群：`1039349479`
 ## 功能范围
 
 - 本地网页控制台，统一查看账号、授权任务、Token、额度和上传状态。
-- 支持已有账号的密码登录和邮箱 OTP 验证。
+- 支持已有账号的密码登录、邮箱 OTP 验证和已配置 TOTP 密钥的登录 2FA。
 - 支持代理池、代理租约、失败冷却和代理凭据脱敏显示。
 - 支持批量重新授权、批量额度查询和批量删除。
 - 支持 Free、Plus、Pro、Team 等可识别套餐展示。
@@ -100,7 +100,7 @@ socks5h://username:password@host:port
 
 ### 2. 导入已有账号
 
-进入“授权工作台”，点击“导入账号”，每行填写一个四段账号：
+进入“授权工作台”，点击“导入账号”，每行填写一个账号：
 
 ```text
 邮箱----ChatGPT账号密码----Outlook客户端ID----Outlook邮箱refresh_token
@@ -119,7 +119,13 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 - Outlook 客户端 ID：用于刷新 Outlook 邮箱访问令牌。
 - Outlook refresh token：用于读取该邮箱收到的 OpenAI 登录验证码。
 
-当前只接受严格四段格式。邮箱单列、三段、六段或缺少任一字段都会被计为无效行。重复导入同一邮箱会更新其本地凭据。
+默认使用四段格式；需要登录 2FA 时，在末尾追加 Base32 TOTP 密钥：
+
+```text
+user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-token----JBSWY3DPEHPK3PXP
+```
+
+邮箱单列、三段、六段或缺少任一字段都会被计为无效行。重复导入同一邮箱会更新其本地凭据。TOTP 密钥只保存在本地运行数据库中，不会出现在账号列表、OAuth 导出或上传内容中。
 
 ### 3. 重新授权
 

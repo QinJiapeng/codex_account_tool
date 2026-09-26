@@ -97,8 +97,8 @@
     <dialog id="importAccountsDialog" class="import-dialog" aria-labelledby="importAccountsTitle">
       <form method="dialog" class="import-dialog-content">
         <div class="dialog-header"><div><p class="eyebrow">ACCOUNT IMPORT</p><h2 id="importAccountsTitle">导入邮箱账号</h2></div><button id="closeImportAccounts" class="icon-button" type="button" aria-label="关闭导入窗口">×</button></div>
-        <p class="hint">每行：<code>邮箱----密码----Outlook 客户端 ID----Outlook 邮箱 refresh_token</code>。四段之间必须使用 <code>----</code>，不会接受邮箱单列或六段导出。</p>
-        <textarea id="accountsText" placeholder="user@example.com----password----client-id----mailbox-refresh-token" autofocus></textarea>
+        <p class="hint">每行：<code>邮箱----密码----Outlook 客户端 ID----Outlook 邮箱 refresh_token</code>；启用登录 2FA 的账号可在末尾追加 <code>----TOTP 密钥</code>。四段格式继续兼容。</p>
+        <textarea id="accountsText" placeholder="user@example.com----password----client-id----mailbox-refresh-token----JBSWY3DPEHPK3PXP" autofocus></textarea>
         <div class="dialog-actions"><button id="cancelImportAccounts" class="secondary-button" type="button">取消</button><button id="importAccounts" type="button">导入账号</button></div>
       </form>
     </dialog>
