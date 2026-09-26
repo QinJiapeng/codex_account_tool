@@ -133,7 +133,7 @@ th { color: #667085; font-weight: 600; }
 .account-list-results .result { margin: 9px 0; }
 .account-list-results .result:empty { display: none; }
 .account-table-wrap { max-height: min(64vh, 720px); overflow: auto; border-top: 1px solid #edf0f5; scrollbar-gutter: stable; }
-.account-table { min-width: 990px; }
+.account-table { min-width: 1080px; }
 .account-table thead th { position: sticky; top: 0; z-index: 3; height: 42px; color: #536174; background: #f6f8fc; box-shadow: inset 0 -1px #dfe5ef; }
 .account-table tbody tr { background: #fff; transition: background .15s ease; }
 .account-table tbody tr:nth-child(even) { background: #fbfcfe; }
@@ -158,8 +158,8 @@ th { color: #667085; font-weight: 600; }
 .account-page-controls button { min-height: 32px; padding: 6px 10px; font-size: 12px; }
 .account-page-controls button + button { margin-left: 0; }
 .proxy-pagination { padding-left: 0; padding-right: 0; }
-.account-status, .token-status, .liveness-status { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 58px; padding: 4px 8px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-.account-status::before, .token-status::before, .liveness-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 2px #ffffffb3; }
+.account-status, .token-status, .liveness-status, .totp-status { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 58px; padding: 4px 8px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.account-status::before, .token-status::before, .liveness-status::before, .totp-status:not(.totp-status-busy)::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 2px #ffffffb3; }
 .account-status-success, .token-status-saved, .liveness-valid { color: #176b4c; border-color: #8fd4b1; background: #e5f8ed; }
 .account-status-failed { color: #a33c31; border-color: #f0aaa3; background: #ffe8e5; }
 .liveness-invalid { color: #a33c31; border-color: #efa39b; background: #ffebe8; }
@@ -172,6 +172,10 @@ th { color: #667085; font-weight: 600; }
 .account-status-reauthing, .account-status-queued { color: #6b45aa; border-color: #c8b6ed; background: #f1ebff; }
 .account-status-querying { color: #19538c; border-color: #98c4ed; background: #e5f2ff; }
 .account-status-busy::before { display: none; }
+.totp-status-enabled { color: #176b4c; border-color: #8fd4b1; background: #e5f8ed; }
+.totp-status-disabled { color: #667085; border-color: #d7dee8; background: #f4f6f9; }
+.totp-status-running, .totp-status-pending { color: #6b45aa; border-color: #c8b6ed; background: #f1ebff; }
+.totp-status-busy::before { display: none; }
 .status-spinner { display: inline-block; width: 11px; height: 11px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: status-spin .75s linear infinite; }
 @keyframes status-spin { to { transform: rotate(360deg); } }
 .danger-button { color: #a33c31; border: 1px solid #f0aaa3; background: #fff0ee; }
@@ -221,6 +225,7 @@ th { color: #667085; font-weight: 600; }
 .quota-purple { color: #63419a; border-color: #c7b6ed; background: linear-gradient(115deg, #f8f4ff, #e7dcff); }
 .quota-neutral { color: #667085; border-color: #d7dee8; background: #f4f6f9; }
 .account-email-cell { min-width: 190px; white-space: normal; }
+.totp-status-cell { min-width: 92px; }
 .account-email { font-weight: 650; line-height: 1.35; overflow-wrap: anywhere; }
 .account-plan { margin-top: 5px; }
 .plan-badge { display: inline-block; min-width: 42px; padding: 3px 8px; border: 1px solid; border-radius: 999px; font-size: 11px; font-weight: 750; line-height: 1.1; text-align: center; }

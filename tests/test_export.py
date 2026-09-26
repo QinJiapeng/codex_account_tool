@@ -784,6 +784,10 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="card account-list-card"' in html
     assert 'class="table-wrap account-table-wrap"' in html
     assert 'class="account-table"' in html
+    assert "2FA 状态" in html
+    assert '<td colspan="8">' in html
+    assert "function totpStatusDisplay" in script
+    assert 'class="totp-status-cell"' in script
     assert 'id="reauthConnectionMode"' in html
     assert 'id="authorizationType"' not in html
     assert 'id="authorizationAction"' in html
@@ -829,6 +833,8 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert '.liveness-rate_limited' in styles
     assert '.liveness-temporary_failed' in styles
     assert '.liveness-unavailable' in styles
+    assert '.totp-status-enabled' in styles
+    assert '.totp-status-disabled' in styles
     assert '.quota-stat' in styles and 'cursor: default; user-select: none' in styles
     assert '#consolePanel .account-table-wrap' in styles and 'user-select: text; -webkit-user-select: text' in styles
     assert 'id="statLimitAccounts"' not in html

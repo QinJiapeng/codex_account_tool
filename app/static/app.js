@@ -249,18 +249,28 @@ function uploadStatusDisplay(account) {
 }
 
 function accountStatusDisplay(account, activity = "") {
-  if (activity === "reauth-running" || activity === "reauth-pending" || activity === "totp-running" || activity === "totp-pending" || activity === "quota") {
+  if (activity === "reauth-running" || activity === "reauth-pending" || activity === "quota") {
     const isQuota = activity === "quota";
-    const isTotp = activity === "totp-running" || activity === "totp-pending";
-    const label = isQuota ? "查询中" : isTotp ? activity === "totp-running" ? "开通 2FA 中" : "2FA 排队中" : activity === "reauth-running" ? "授权中" : "排队中";
-    const tone = isQuota ? "querying" : isTotp ? "reauthing" : activity === "reauth-running" ? "reauthing" : "queued";
-    const title = isQuota ? "正在查询额度，请稍候" : isTotp ? "正在开通 2FA，请稍候" : activity === "reauth-running" ? "正在重新授权，请稍候" : "已加入授权队列，等待线程处理";
+    const label = isQuota ? "查询中" : activity === "reauth-running" ? "授权中" : "排队中";
+    const tone = isQuota ? "querying" : activity === "reauth-running" ? "reauthing" : "queued";
+    const title = isQuota ? "正在查询额度，请稍候" : activity === "reauth-running" ? "正在重新授权，请稍候" : "已加入授权队列，等待线程处理";
     return `<span class="account-status account-status-${tone} account-status-busy" title="${title}"><span class="status-spinner" aria-hidden="true"></span>${label}</span>`;
   }
   const status = String(account.status || "pending").toLowerCase();
   const tone = ["success", "failed", "disabled", "running", "pending"].includes(status) ? status : "pending";
   const title = ["failed", "disabled"].includes(status) && account.last_error ? ` title="${escapeHtml(account.last_error)}"` : "";
   return `<span class="account-status account-status-${tone}"${title}>${escapeHtml(statusLabels[status] || "待处理")}</span>`;
+}
+
+function totpStatusDisplay(account, activity = "") {
+  if (activity === "totp-running" || activity === "totp-pending") {
+    const running = activity === "totp-running";
+    const label = running ? "开通中" : "排队中";
+    const title = running ? "正在开通 2FA，请稍候" : "已加入 2FA 开通队列，等待线程处理";
+    return `<span class="totp-status totp-status-busy totp-status-${running ? "running" : "pending"}" title="${title}"><span class="status-spinner" aria-hidden="true"></span>${label}</span>`;
+  }
+  const enabled = Boolean(account && account.has_totp);
+  return `<span class="totp-status totp-status-${enabled ? "enabled" : "disabled"}" title="${enabled ? "账号已保存 2FA 密钥" : "账号尚未开通 2FA"}">${enabled ? "已开通" : "未开通"}</span>`;
 }
 
 function livenessStatusDisplay(account) {
@@ -430,8 +440,11 @@ function accountActivity(accountId) {
 function refreshAccountActivityCells() {
   document.querySelectorAll(".account-row").forEach((row) => {
     const account = accountSnapshot.get(String(row.dataset.accountId || ""));
+    const activity = account ? accountActivity(account.id) : "";
     const cell = row.querySelector(".account-status-cell");
-    if (account && cell) cell.innerHTML = accountStatusDisplay(account, accountActivity(account.id));
+    const totpCell = row.querySelector(".totp-status-cell");
+    if (account && cell) cell.innerHTML = accountStatusDisplay(account, activity);
+    if (account && totpCell) totpCell.innerHTML = totpStatusDisplay(account, activity);
   });
 }
 
@@ -511,8 +524,9 @@ function renderAccountTable() {
       : `<span class="plan-badge plan-unknown">未识别</span>`;
     const emailCell = `<div class="account-email">${escapeHtml(account.email)}</div><div class="account-plan">${planBadge}</div>`;
     const selectedClass = selectedAccounts.has(id) ? " is-selected" : "";
-    return `<tr class="account-row${selectedClass}" data-account-id="${escapeHtml(id)}"><td><input type="checkbox" class="account-check" data-id="${escapeHtml(id)}" aria-label="选择 ${escapeHtml(account.email)}" ${selectedAccounts.has(id) ? "checked" : ""}></td><td class="account-email-cell">${emailCell}</td><td class="account-status-cell">${accountStatusDisplay(account, accountActivity(id))}</td><td>${livenessStatusDisplay(account)}</td><td class="upload-status-cell">${uploadStatusDisplay(account)}</td><td>${quotaBadge}</td><td class="quota-limit-cell">${quotaLimitDisplay(quota)}</td></tr>`;
-  }).join("") || `<tr><td colspan="7"><div class="account-empty">${query ? "没有匹配的账号" : "暂无账号，请先点击“导入账号”"}</div></td></tr>`;
+    const activity = accountActivity(id);
+    return `<tr class="account-row${selectedClass}" data-account-id="${escapeHtml(id)}"><td><input type="checkbox" class="account-check" data-id="${escapeHtml(id)}" aria-label="选择 ${escapeHtml(account.email)}" ${selectedAccounts.has(id) ? "checked" : ""}></td><td class="account-email-cell">${emailCell}</td><td class="account-status-cell">${accountStatusDisplay(account, activity)}</td><td class="totp-status-cell">${totpStatusDisplay(account, activity)}</td><td>${livenessStatusDisplay(account)}</td><td class="upload-status-cell">${uploadStatusDisplay(account)}</td><td>${quotaBadge}</td><td class="quota-limit-cell">${quotaLimitDisplay(quota)}</td></tr>`;
+  }).join("") || `<tr><td colspan="8"><div class="account-empty">${query ? "没有匹配的账号" : "暂无账号，请先点击“导入账号”"}</div></td></tr>`;
   document.querySelectorAll(".account-check").forEach((checkbox) => checkbox.addEventListener("change", () => {
     const id = String(checkbox.dataset.id || "");
     if (checkbox.checked) selectedAccounts.add(id); else selectedAccounts.delete(id);
