@@ -127,6 +127,8 @@ th { color: #667085; font-weight: 600; }
 .account-list-toolbar button { min-height: 36px; padding: 8px 11px; font-size: 13px; }
 .account-transfer-group { grid-column: 1 / -1; margin-left: 0; padding: 12px 0 0; border-top: 1px solid #dfe5ef; }
 .account-transfer-actions select { min-height: 35px; border: 1px solid #d8e0ff; border-radius: 7px; padding: 0 8px; color: #315efb; background: #fff; font-size: 13px; }
+.account-primary-actions .action-select { min-height: 36px; border: 1px solid #d8e0ff; border-radius: 7px; padding: 0 8px; color: #315efb; background: #fff; font-size: 13px; cursor: pointer; }
+.account-primary-actions .action-select:focus { border-color: #8fa8ff; outline: 3px solid #315efb26; }
 .account-list-results { display: flex; flex-wrap: wrap; gap: 10px; min-height: 0; padding: 0 18px; background: #fff; }
 .account-list-results .result { margin: 9px 0; }
 .account-list-results .result:empty { display: none; }

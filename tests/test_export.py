@@ -779,9 +779,10 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="table-wrap account-table-wrap"' in html
     assert 'class="account-table"' in html
     assert 'id="reauthConnectionMode"' in html
-    assert 'id="reauthTotp"' in html
-    assert 'id="setupTotp"' in html
-    assert 'id="retryFailedTotp"' in html
+    assert 'id="authorizationType"' in html
+    assert 'id="authorizationAction"' in html
+    assert 'id="retryAuthorizationType"' in html
+    assert 'id="retryFailedAuthorization"' in html
     assert '<option value="2fa">2FA 三段 TXT</option>' in html
     assert "/api/reauth/queue-2fa" in script
     assert "/api/accounts/2fa/setup" in script
