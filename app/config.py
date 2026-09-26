@@ -60,7 +60,7 @@ class Settings:
             host=os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1",
             port=_int("APP_PORT", 10717, 1),
             data_dir=data_dir,
-            worker_count=_int("REAUTH_WORKERS", 20, 1),
+            worker_count=min(200, _int("REAUTH_WORKERS", 20, 1)),
             use_proxy_default=os.getenv("USE_PROXY_DEFAULT", "true").strip().lower() in {"1", "true", "yes", "on"},
             proxy_lease_seconds=_int("PROXY_LEASE_SECONDS", 1200, 60),
             proxy_cooldown_seconds=_int("PROXY_COOLDOWN_SECONDS", 60, 5),
