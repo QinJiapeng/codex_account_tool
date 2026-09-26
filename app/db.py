@@ -870,6 +870,42 @@ class Repository:
             })
         return result
 
+    def export_totp_records(self, account_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """Return account/password/TOTP fields for the explicit 2FA export."""
+
+        params: list[Any] = []
+        where = "WHERE a.totp_secret <> '' AND a.password <> ''"
+        if account_ids is not None:
+            normalized = list(dict.fromkeys(
+                str(value or "").strip()
+                for value in account_ids
+                if str(value or "").strip()
+            ))
+            if not normalized:
+                return []
+            marks = ",".join("?" for _ in normalized)
+            where += f" AND a.id IN ({marks})"
+            params.extend(normalized)
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT a.id, a.email, a.password, a.totp_secret
+                  FROM accounts AS a
+                  {where}
+                 ORDER BY a.email ASC
+                """,
+                params,
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"] or ""),
+                "email": str(row["email"] or "").strip().lower(),
+                "password": str(row["password"] or ""),
+                "totp_secret": str(row["totp_secret"] or ""),
+            }
+            for row in rows
+        ]
+
     def save_quota(self, account_id: str, result: dict[str, Any]) -> None:
         now = utc_now()
         raw_windows = result.get("limit_windows")

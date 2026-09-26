@@ -427,7 +427,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         account_ids = ids_from_body(body) if request.method == "POST" else None
         selected_format = str(body.get("format") or format).strip().lower()
         try:
-            records = request.app.state.repository.export_account_records(account_ids)
+            records = (
+                request.app.state.repository.export_totp_records(account_ids)
+                if selected_format in {"2fa", "totp", "three-segment", "three_segment", "2fa-txt"}
+                else request.app.state.repository.export_account_records(account_ids)
+            )
             content, media_type, filename = build_export_document(records, selected_format)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=safe_error(error)) from error

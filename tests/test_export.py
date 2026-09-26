@@ -80,6 +80,15 @@ def test_export_documents_have_expected_formats_and_no_cross_format_secrets():
     content, _, _ = service.build_export_document([{**three_segment, "totp_secret": "JBSWY3DPEHPK3PXP"}], "four-segment")
     assert content.decode("utf-8-sig").strip() == "user@example.com----mail-password----JBSWY3DPEHPK3PXP"
 
+    content, media_type, filename = service.build_export_document([{
+        "email": "mfa@example.com",
+        "password": "chatgpt-password",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }], "2fa")
+    assert media_type.startswith("text/plain")
+    assert filename == "codex-account-2fa-1.txt"
+    assert content.decode("utf-8-sig").strip() == "mfa@example.com----chatgpt-password----JBSWY3DPEHPK3PXP"
+
     content, media_type, filename = service.build_export_document([_sub2api_record()], "sub2api")
     assert media_type == "application/zip"
     assert filename == "sub2api-1-accounts.zip"
@@ -502,6 +511,11 @@ def test_api_list_hides_credentials_and_export_is_explicit(tmp_path: Path, monke
         assert "mailbox_refresh_token" not in item
         account = Repository(Database(settings.db_path)).get_account(item["id"])
         assert account
+        repository = Repository(Database(settings.db_path))
+        repository.update_account_totp_secret(account["id"], "JBSWY3DPEHPK3PXP")
+        totp_export = client.post("/api/accounts/export", json={"format": "2fa"})
+        assert totp_export.status_code == 200
+        assert totp_export.content.decode("utf-8-sig").strip() == "user@example.com----mail-password----JBSWY3DPEHPK3PXP"
         Repository(Database(settings.db_path)).save_token(account["id"], {
             "email": account["email"],
             "access_token": "access-secret",
@@ -731,6 +745,7 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'id="reauthConnectionMode"' in html
     assert 'id="reauthTotp"' in html
     assert 'id="setupTotp"' in html
+    assert '<option value="2fa">2FA 三段 TXT</option>' in html
     assert "/api/reauth/queue-2fa" in script
     assert "/api/accounts/2fa/setup" in script
     assert 'class="account-action-label">账号操作' in html

@@ -189,10 +189,11 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 在“导出与上传”区域选择格式后点击“导出授权结果”：
 
 - 邮箱四段 TXT：导出最新的邮箱、密码、Outlook 客户端 ID 和 Outlook refresh token。
+- 2FA 三段 TXT：导出已配置 TOTP 的邮箱、密码和 2FA 密钥，格式为 `邮箱----密码----TOTP 密钥`；此格式不要求账号已有 OAuth Token。
 - CPA ZIP：每个账号生成一个包含 Codex OAuth 凭据的 JSON 文件。
 - Sub2API ZIP：每个账号生成一个可直接在 Sub2API 数据导入中使用的认证 JSON 文件，并打包下载。
 
-只有已经保存 OAuth Token 的账号会进入 CPA 和 Sub2API 导出。导出文件包含可用凭据，应当按密码文件保护，禁止上传到公开网盘或提交到 Git。
+只有已经保存 OAuth Token 的账号会进入 CPA 和 Sub2API 导出；2FA 三段 TXT 只导出本地已保存 TOTP 密钥且有密码的账号。导出文件包含可用凭据，应当按密码文件保护，禁止上传到公开网盘或提交到 Git。
 
 ### 8. 上传到 CPA / CLIProxyAPI
 

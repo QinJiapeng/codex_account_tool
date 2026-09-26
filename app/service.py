@@ -48,11 +48,15 @@ def _export_format(value: Any) -> str:
         "email4": "four-segment",
         "email-4": "four-segment",
         "txt": "four-segment",
+        "three_segment": "2fa",
+        "three-segment": "2fa",
+        "2fa-txt": "2fa",
+        "totp": "2fa",
         "json": "cpa",
     }
     normalized = aliases.get(normalized, normalized)
-    if normalized not in {"four-segment", "cpa", "sub2api"}:
-        raise ValueError("导出格式必须是 four-segment、cpa 或 sub2api")
+    if normalized not in {"four-segment", "2fa", "cpa", "sub2api"}:
+        raise ValueError("导出格式必须是 four-segment、2fa、cpa 或 sub2api")
     return normalized
 
 
@@ -234,6 +238,22 @@ def build_export_document(records: Sequence[Mapping[str, Any]], format: str = "c
 
     selected = _export_format(format)
     rows = list(records)
+    if selected == "2fa":
+        lines: list[str] = []
+        for record in rows:
+            email = str(record.get("email") or "").strip().lower()
+            password = str(record.get("password") or "").strip()
+            totp_secret = _normalize_totp_secret(record.get("totp_secret"))
+            if not email or not password:
+                raise ValueError(f"{email or '账号'} 缺少邮箱或密码")
+            if not totp_secret:
+                raise ValueError(f"{email} 缺少有效 2FA 密钥")
+            lines.append("----".join((email, password, totp_secret)))
+        if not lines:
+            raise ValueError("没有已配置 2FA 密钥的账号可导出")
+        content = ("\ufeff" + "\n".join(lines) + "\n").encode("utf-8")
+        return content, "text/plain; charset=utf-8", f"codex-account-2fa-{len(lines)}.txt"
+
     if not rows:
         raise ValueError("没有已保存 OAuth Token 的账号可导出")
     if selected == "four-segment":

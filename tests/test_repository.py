@@ -57,6 +57,27 @@ def test_totp_setup_candidates_and_job_operation_are_private_and_persisted(tmp_p
     assert "totp_secret" not in repository.list_accounts()[0][0]
 
 
+def test_totp_export_does_not_require_oauth_token(tmp_path: Path):
+    database = Database(tmp_path / "totp-export.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([{
+        "email": "mfa@example.com",
+        "password": "chatgpt-password",
+        "client_id": "",
+        "mailbox_refresh_token": "",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }])
+    records = repository.export_totp_records()
+    assert records == [{
+        "id": records[0]["id"],
+        "email": "mfa@example.com",
+        "password": "chatgpt-password",
+        "totp_secret": "JBSWY3DPEHPK3PXP",
+    }]
+    assert repository.export_account_records() == []
+
+
 def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tmp_path: Path):
     database = Database(tmp_path / "liveness.db")
     database.initialize()
