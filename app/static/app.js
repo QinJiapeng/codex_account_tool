@@ -58,6 +58,7 @@ const operationState = {
   totpSetupIds: new Set(),
   totpSetupTargetCount: 0,
   targetedReauthBusy: false,
+  targetedTotpSetupBusy: false,
   livenessBusy: false,
   livenessIds: new Set(),
   livenessTargetCount: 0,
@@ -591,7 +592,7 @@ function updateAccountSelectionState() {
   const reauthButton = $("reauthSelected");
   const livenessButton = $("livenessSelected");
   const quotaButton = $("quotaSelected");
-  const anyAccountOperationBusy = operationState.reauthBusy || operationState.totpSetupBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  const anyAccountOperationBusy = operationState.reauthBusy || operationState.totpSetupBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedTotpSetupBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
   reauthButton.disabled = !hasAccounts || anyAccountOperationBusy;
   if (reauthTotpButton) reauthTotpButton.disabled = !hasAccounts || anyAccountOperationBusy;
   if (setupTotpButton) setupTotpButton.disabled = !hasAccounts || anyAccountOperationBusy;
@@ -612,11 +613,17 @@ function updateAccountSelectionState() {
   livenessButton.setAttribute("aria-busy", String(operationState.livenessBusy));
   quotaButton.setAttribute("aria-busy", String(operationState.quotaBusy));
   const retryReauthButton = $("retryFailedReauth");
+  const retryTotpButton = $("retryFailedTotp");
   const retryQuotaButton = $("retryFailedQuota");
   if (retryReauthButton) {
     retryReauthButton.disabled = !hasAccounts || anyAccountOperationBusy;
     retryReauthButton.classList.toggle("is-busy", operationState.targetedReauthBusy);
     retryReauthButton.setAttribute("aria-busy", String(operationState.targetedReauthBusy));
+  }
+  if (retryTotpButton) {
+    retryTotpButton.disabled = !hasAccounts || anyAccountOperationBusy;
+    retryTotpButton.classList.toggle("is-busy", operationState.targetedTotpSetupBusy);
+    retryTotpButton.setAttribute("aria-busy", String(operationState.targetedTotpSetupBusy));
   }
   if (retryQuotaButton) {
     retryQuotaButton.disabled = !hasAccounts || anyAccountOperationBusy;
@@ -915,8 +922,9 @@ async function runLivenessAction() {
 
 async function runTargetedAccountAction(path, label) {
   const isReauth = path === "/api/reauth/retry-failed";
-  const busyKey = isReauth ? "targetedReauthBusy" : "targetedQuotaBusy";
-  const button = $(isReauth ? "retryFailedReauth" : "retryFailedQuota");
+  const isTotpSetup = path === "/api/accounts/2fa/retry-failed";
+  const busyKey = isReauth ? "targetedReauthBusy" : isTotpSetup ? "targetedTotpSetupBusy" : "targetedQuotaBusy";
+  const button = $(isReauth ? "retryFailedReauth" : isTotpSetup ? "retryFailedTotp" : "retryFailedQuota");
   if (!button || button.disabled) return;
   operationState[busyKey] = true;
   updateAccountSelectionState();
@@ -924,7 +932,7 @@ async function runTargetedAccountAction(path, label) {
   try {
     const result = await api(path, {method: "POST", body: "{}"});
     const matched = Number(result.matched || 0);
-    if (isReauth) {
+    if (isReauth || isTotpSetup) {
       setAccountResult("actionResult", `${label}：匹配 ${matched} 个，加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个`);
     } else {
       const completed = Array.isArray(result.results) ? result.results.length : 0;
@@ -945,6 +953,7 @@ $("setupTotp").onclick = () => runTotpSetupAction().catch((error) => { setAccoun
 $("livenessSelected").onclick = () => runLivenessAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedReauth").onclick = () => runTargetedAccountAction("/api/reauth/retry-failed", "重新授权失败账号");
+$("retryFailedTotp").onclick = () => runTargetedAccountAction("/api/accounts/2fa/retry-failed", "重试开通 2FA 失败账号");
 $("retryFailedQuota").onclick = () => runTargetedAccountAction("/api/quotas/refresh-failed", "查询失败额度账号");
 $("clearDisabledAccounts").onclick = async () => {
   if (operationState.cleanupDisabledBusy || !window.confirm("确定删除全部已禁用账号吗？相关 Token、额度和授权任务也会一并删除。")) return;

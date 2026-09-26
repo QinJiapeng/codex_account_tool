@@ -356,6 +356,25 @@ def test_failed_quota_account_ids_only_returns_authorized_non_success_results(tm
     assert set(repository.failed_quota_account_ids()) == {failed["id"]}
 
 
+def test_failed_totp_setup_account_ids_only_returns_latest_failed_setup(tmp_path: Path):
+    database = Database(tmp_path / "totp-retry.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "failed@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "successful@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+    ])
+    failed = repository.get_account_by_email("failed@example.com")
+    successful = repository.get_account_by_email("successful@example.com")
+    assert failed and successful
+    failed_job = repository.create_job(failed["id"], False, operation="totp_setup")
+    repository.update_job(failed_job["id"], status="failed", error="temporary", finished_at="2026-09-26T01:00:00+00:00")
+    success_job = repository.create_job(successful["id"], False, operation="totp_setup")
+    repository.update_job(success_job["id"], status="success", finished_at="2026-09-26T01:00:01+00:00")
+
+    assert repository.failed_totp_setup_account_ids() == [failed["id"]]
+
+
 def test_legacy_free_monthly_window_is_not_displayed_as_five_hours(tmp_path: Path):
     database = Database(tmp_path / "tool.db")
     database.initialize()

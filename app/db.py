@@ -474,6 +474,36 @@ class Repository:
             ).fetchall()
         return [str(row["id"]) for row in rows]
 
+    def failed_totp_setup_account_ids(self) -> list[str]:
+        """Return accounts whose latest TOTP setup job failed.
+
+        A later successful, pending, or running setup job suppresses an older
+        failure so the retry button never requeues stale results.
+        """
+
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT j.account_id
+                  FROM jobs AS j
+                  JOIN accounts AS a ON a.id=j.account_id
+                 WHERE j.operation='totp_setup'
+                   AND j.status='failed'
+                   AND NOT EXISTS (
+                       SELECT 1
+                         FROM jobs AS newer
+                        WHERE newer.account_id=j.account_id
+                          AND newer.operation='totp_setup'
+                          AND (
+                              newer.created_at > j.created_at
+                              OR (newer.created_at = j.created_at AND newer.id > j.id)
+                          )
+                   )
+                 ORDER BY j.finished_at DESC, j.account_id
+                """
+            ).fetchall()
+        return [str(row["account_id"]) for row in rows]
+
     def delete_accounts(self, account_ids: Sequence[str]) -> dict[str, int]:
         """Delete only the explicitly selected accounts and dependent records."""
 
