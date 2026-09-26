@@ -39,6 +39,24 @@ def test_totp_secret_is_stored_for_auth_callback_but_not_public_list(tmp_path: P
     assert repository.account_ids_with_totp() == [account["id"]]
 
 
+def test_totp_setup_candidates_and_job_operation_are_private_and_persisted(tmp_path: Path):
+    database = Database(tmp_path / "totp-setup.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "ready@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "configured@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20, "totp_secret": "JBSWY3DPEHPK3PXP"},
+        {"email": "no-password@example.com", "password": "", "client_id": "cid", "mailbox_refresh_token": "c" * 20},
+    ])
+    rows = repository.totp_setup_account_rows()
+    ready = next(row for row in rows if row["email"] == "ready@example.com")
+    job = repository.create_job(ready["id"], False, operation="totp_setup")
+    assert job["operation"] == "totp_setup"
+    repository.update_account_totp_secret(ready["id"], "jbswy3dpehpk3pxp")
+    assert repository.get_account(ready["id"])["totp_secret"] == "JBSWY3DPEHPK3PXP"
+    assert "totp_secret" not in repository.list_accounts()[0][0]
+
+
 def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tmp_path: Path):
     database = Database(tmp_path / "liveness.db")
     database.initialize()

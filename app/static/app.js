@@ -14,7 +14,7 @@ const api = async (path, options = {}) => {
 };
 
 const statusLabels = {success: "成功", failed: "失败", disabled: "已禁用", running: "进行中", pending: "待处理", queued: "排队中", cancelled: "已取消"};
-const jobStepLabels = {queued: "等待执行", proxy: "获取代理", login: "登录授权", save_token: "保存 Token", finished: "已完成"};
+const jobStepLabels = {queued: "等待执行", proxy: "获取代理", login: "登录授权", check_2fa: "检查 2FA", enroll_2fa: "申请密钥", activate_2fa: "激活 2FA", save_token: "保存 Token", save_totp: "保存 2FA 密钥", finished: "已完成"};
 const selectedAccounts = new Set();
 const accountSnapshot = new Map();
 let accountListItems = [];
@@ -54,6 +54,9 @@ const operationState = {
   reauthBusy: false,
   reauthIds: new Set(),
   reauthTargetCount: 0,
+  totpSetupBusy: false,
+  totpSetupIds: new Set(),
+  totpSetupTargetCount: 0,
   targetedReauthBusy: false,
   livenessBusy: false,
   livenessIds: new Set(),
@@ -150,6 +153,7 @@ function renderJobs(jobs = {}) {
   $("jobStats").textContent = `最近 ${items.length} 条`;
   $("jobs").innerHTML = items.length ? items.map((job) => {
     const status = String(job.status || "pending").toLowerCase();
+    const operation = String(job.operation || "reauth").toLowerCase();
     const tone = ["success", "failed", "running", "pending", "cancelled"].includes(status) ? status : "pending";
     const icon = status === "success" ? "✓" : status === "failed" ? "×" : status === "running" ? "↻" : status === "cancelled" ? "−" : "…";
     const step = jobStepLabels[String(job.current_step || "").toLowerCase()] || String(job.current_step || "等待执行");
@@ -173,7 +177,8 @@ function renderJobs(jobs = {}) {
       connectionTone = "waiting";
     }
     const error = job.error ? `<div class="job-error"><b>失败原因</b><span>${escapeHtml(job.error)}</span></div>` : "";
-    return `<article class="job job-${tone}"><span class="job-icon" aria-hidden="true">${icon}</span><div class="job-account"><strong>${escapeHtml(job.email)}</strong><span class="job-connection job-connection-${connectionTone}">${escapeHtml(connection)}</span></div><div class="job-step"><span>当前步骤</span><strong>${escapeHtml(step)}</strong></div><span class="job-status job-status-${tone}">${escapeHtml(statusLabels[status] || status)}</span><time datetime="${escapeHtml(timeValue || "")}">${escapeHtml(time)}</time>${error}</article>`;
+    const operationLabel = operation === "totp_setup" ? "开通 2FA" : "重新授权";
+    return `<article class="job job-${tone}"><span class="job-icon" aria-hidden="true">${icon}</span><div class="job-account"><strong>${escapeHtml(job.email)}</strong><span class="job-operation">${operationLabel}</span><span class="job-connection job-connection-${connectionTone}">${escapeHtml(connection)}</span></div><div class="job-step"><span>当前步骤</span><strong>${escapeHtml(step)}</strong></div><span class="job-status job-status-${tone}">${escapeHtml(statusLabels[status] || status)}</span><time datetime="${escapeHtml(timeValue || "")}">${escapeHtml(time)}</time>${error}</article>`;
   }).join("") : `<div class="job-empty">暂无授权任务</div>`;
 }
 
@@ -243,11 +248,12 @@ function uploadStatusDisplay(account) {
 }
 
 function accountStatusDisplay(account, activity = "") {
-  if (activity === "reauth-running" || activity === "reauth-pending" || activity === "quota") {
+  if (activity === "reauth-running" || activity === "reauth-pending" || activity === "totp-running" || activity === "totp-pending" || activity === "quota") {
     const isQuota = activity === "quota";
-    const label = isQuota ? "查询中" : activity === "reauth-running" ? "授权中" : "排队中";
-    const tone = isQuota ? "querying" : activity === "reauth-running" ? "reauthing" : "queued";
-    const title = isQuota ? "正在查询额度，请稍候" : activity === "reauth-running" ? "正在重新授权，请稍候" : "已加入授权队列，等待线程处理";
+    const isTotp = activity === "totp-running" || activity === "totp-pending";
+    const label = isQuota ? "查询中" : isTotp ? activity === "totp-running" ? "开通 2FA 中" : "2FA 排队中" : activity === "reauth-running" ? "授权中" : "排队中";
+    const tone = isQuota ? "querying" : isTotp ? "reauthing" : activity === "reauth-running" ? "reauthing" : "queued";
+    const title = isQuota ? "正在查询额度，请稍候" : isTotp ? "正在开通 2FA，请稍候" : activity === "reauth-running" ? "正在重新授权，请稍候" : "已加入授权队列，等待线程处理";
     return `<span class="account-status account-status-${tone} account-status-busy" title="${title}"><span class="status-spinner" aria-hidden="true"></span>${label}</span>`;
   }
   const status = String(account.status || "pending").toLowerCase();
@@ -409,8 +415,13 @@ function renderSchedulerWorkbench(scheduler = {}, settings = {}) {
 function accountActivity(accountId) {
   const id = String(accountId || "");
   const job = activeReauthJobs.get(id);
-  if (job) return job.status === "running" ? "reauth-running" : "reauth-pending";
+  if (job) {
+    const operation = String(job.operation || "reauth").toLowerCase();
+    if (operation === "totp_setup") return job.status === "running" ? "totp-running" : "totp-pending";
+    return job.status === "running" ? "reauth-running" : "reauth-pending";
+  }
   if (operationState.reauthIds.has(id)) return "reauth-pending";
+  if (operationState.totpSetupIds.has(id)) return "totp-pending";
   if (operationState.quotaIds.has(id) || quotaProgressSnapshot.active_account_ids.includes(id)) return "quota";
   return "";
 }
@@ -565,6 +576,12 @@ function updateAccountSelectionState() {
       ? `2FA 重新授权中（${operationState.reauthTargetCount}）`
       : count ? `2FA 重新授权选中（${count}）` : "2FA 重新授权全部";
   }
+  const setupTotpButton = $("setupTotp");
+  if (setupTotpButton) {
+    setupTotpButton.textContent = operationState.totpSetupBusy
+      ? `开通 2FA 中（${operationState.totpSetupTargetCount}）`
+      : count ? `开通选中账号 2FA（${count}）` : "开通 2FA";
+  }
   $("quotaSelected").textContent = operationState.quotaBusy
     ? `刷新中（${operationState.quotaTargetCount}）`
     : count ? `刷新选中额度（${count}）` : "查询全部额度";
@@ -574,14 +591,20 @@ function updateAccountSelectionState() {
   const reauthButton = $("reauthSelected");
   const livenessButton = $("livenessSelected");
   const quotaButton = $("quotaSelected");
-  reauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
-  if (reauthTotpButton) reauthTotpButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
-  livenessButton.disabled = !hasAccounts || operationState.livenessBusy || operationState.reauthBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
-  quotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  const anyAccountOperationBusy = operationState.reauthBusy || operationState.totpSetupBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  reauthButton.disabled = !hasAccounts || anyAccountOperationBusy;
+  if (reauthTotpButton) reauthTotpButton.disabled = !hasAccounts || anyAccountOperationBusy;
+  if (setupTotpButton) setupTotpButton.disabled = !hasAccounts || anyAccountOperationBusy;
+  livenessButton.disabled = !hasAccounts || anyAccountOperationBusy;
+  quotaButton.disabled = !hasAccounts || anyAccountOperationBusy;
   reauthButton.classList.toggle("is-busy", operationState.reauthBusy);
   if (reauthTotpButton) {
     reauthTotpButton.classList.toggle("is-busy", operationState.reauthBusy);
     reauthTotpButton.setAttribute("aria-busy", String(operationState.reauthBusy));
+  }
+  if (setupTotpButton) {
+    setupTotpButton.classList.toggle("is-busy", operationState.totpSetupBusy);
+    setupTotpButton.setAttribute("aria-busy", String(operationState.totpSetupBusy));
   }
   livenessButton.classList.toggle("is-busy", operationState.livenessBusy);
   quotaButton.classList.toggle("is-busy", operationState.quotaBusy);
@@ -591,22 +614,22 @@ function updateAccountSelectionState() {
   const retryReauthButton = $("retryFailedReauth");
   const retryQuotaButton = $("retryFailedQuota");
   if (retryReauthButton) {
-    retryReauthButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.targetedReauthBusy || operationState.quotaBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+    retryReauthButton.disabled = !hasAccounts || anyAccountOperationBusy;
     retryReauthButton.classList.toggle("is-busy", operationState.targetedReauthBusy);
     retryReauthButton.setAttribute("aria-busy", String(operationState.targetedReauthBusy));
   }
   if (retryQuotaButton) {
-    retryQuotaButton.disabled = !hasAccounts || operationState.quotaBusy || operationState.livenessBusy || operationState.targetedQuotaBusy || operationState.reauthBusy || operationState.targetedReauthBusy || operationState.cleanupDisabledBusy;
+    retryQuotaButton.disabled = !hasAccounts || anyAccountOperationBusy;
     retryQuotaButton.classList.toggle("is-busy", operationState.targetedQuotaBusy);
     retryQuotaButton.setAttribute("aria-busy", String(operationState.targetedQuotaBusy));
   }
   const cleanupDisabledButton = $("clearDisabledAccounts");
   if (cleanupDisabledButton) {
-    cleanupDisabledButton.disabled = !hasAccounts || operationState.reauthBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+    cleanupDisabledButton.disabled = !hasAccounts || anyAccountOperationBusy;
     cleanupDisabledButton.classList.toggle("is-busy", operationState.cleanupDisabledBusy);
     cleanupDisabledButton.setAttribute("aria-busy", String(operationState.cleanupDisabledBusy));
   }
-  $("deleteSelected").disabled = count === 0 || operationState.reauthBusy || operationState.livenessBusy || operationState.quotaBusy || operationState.targetedReauthBusy || operationState.targetedQuotaBusy || operationState.cleanupDisabledBusy;
+  $("deleteSelected").disabled = count === 0 || anyAccountOperationBusy;
 }
 
 async function refreshData({showError = true} = {}) {
@@ -830,6 +853,38 @@ async function runAccountAction(path) {
   }
 }
 
+async function runTotpSetupAction() {
+  if (operationState.totpSetupBusy) return;
+  const selected = selectedAccounts.size > 0;
+  const ids = selected ? [...selectedAccounts] : [];
+  operationState.totpSetupBusy = true;
+  operationState.totpSetupIds = new Set(ids);
+  operationState.totpSetupTargetCount = selected ? ids.length : "符合条件账号";
+  updateAccountSelectionState();
+  refreshAccountActivityCells();
+  const requestedConnection = connectionModeSnapshot.useProxy ? "代理池模式" : "直连模式";
+  setAccountResult("actionResult", `正在以${requestedConnection}提交${selected ? ` ${ids.length} 个` : "全部符合条件的"}账号开通 2FA，请稍候…`);
+  try {
+    const result = await api("/api/accounts/2fa/setup", {method: "POST", body: JSON.stringify(selected ? {ids} : {})});
+    const skipped = Number(result.skipped || 0);
+    const reasons = [];
+    if (Number(result.already_configured || 0)) reasons.push(`已配置 ${result.already_configured} 个`);
+    if (Number(result.no_password || 0)) reasons.push(`无密码 ${result.no_password} 个`);
+    if (Number(result.disabled_skipped || 0)) reasons.push(`已禁用 ${result.disabled_skipped} 个`);
+    const reasonText = skipped ? `，跳过 ${skipped} 个${reasons.length ? `（${reasons.join("，")}）` : ""}` : "";
+    setAccountResult("actionResult", `已提交开通 2FA（${result.use_proxy ? "代理池模式" : "直连模式"}）：匹配 ${result.matched || 0} 个，加入 ${result.queued || 0} 个，重复 ${result.duplicate || 0} 个${reasonText}`);
+    await refreshData();
+  } catch (error) {
+    setAccountResult("actionResult", error.message);
+  } finally {
+    operationState.totpSetupBusy = false;
+    operationState.totpSetupIds.clear();
+    operationState.totpSetupTargetCount = 0;
+    updateAccountSelectionState();
+    refreshAccountActivityCells();
+  }
+}
+
 async function runLivenessAction() {
   if (operationState.livenessBusy) return;
   const selected = selectedAccounts.size > 0;
@@ -886,6 +941,7 @@ async function runTargetedAccountAction(path, label) {
 
 $("reauthSelected").onclick = () => runAccountAction("/api/reauth/queue").catch((error) => { setAccountResult("actionResult", error.message); });
 $("reauthTotp").onclick = () => runAccountAction("/api/reauth/queue-2fa").catch((error) => { setAccountResult("actionResult", error.message); });
+$("setupTotp").onclick = () => runTotpSetupAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("livenessSelected").onclick = () => runLivenessAction().catch((error) => { setAccountResult("actionResult", error.message); });
 $("quotaSelected").onclick = () => runAccountAction("/api/quotas/refresh").catch((error) => { setAccountResult("actionResult", error.message); });
 $("retryFailedReauth").onclick = () => runTargetedAccountAction("/api/reauth/retry-failed", "重新授权失败账号");

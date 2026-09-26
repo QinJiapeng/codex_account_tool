@@ -1012,7 +1012,7 @@ class ReauthService:
                 duplicate += 1
                 jobs.append(active)
                 continue
-            job = self.repository.create_job(account_id, use_proxy)
+            job = self.repository.create_job(account_id, use_proxy, operation="reauth")
             message = safe_error(event_message) if event_message else "已加入重新授权队列"
             self.repository.add_event(job["id"], "info", message)
             if event_message:
@@ -1030,6 +1030,61 @@ class ReauthService:
             "jobs": jobs,
         }
 
+    async def queue_totp_setup(
+        self,
+        account_ids: list[str] | None = None,
+        *,
+        use_proxy: bool = False,
+    ) -> dict[str, Any]:
+        """Queue independent ChatGPT 2FA enrollment jobs."""
+
+        rows = self.repository.totp_setup_account_rows(account_ids)
+        requested_count = len(account_ids) if account_ids is not None else len(rows)
+        queued = duplicate = skipped = disabled_skipped = already_configured = no_password = 0
+        jobs: list[dict[str, Any]] = []
+        for account in rows:
+            account_id = str(account.get("id") or "").strip()
+            if not account_id:
+                skipped += 1
+                continue
+            status = str(account.get("status") or "").strip().lower()
+            if status == "disabled":
+                skipped += 1
+                disabled_skipped += 1
+                continue
+            if str(account.get("totp_secret") or "").strip():
+                skipped += 1
+                already_configured += 1
+                continue
+            if not str(account.get("password") or "").strip():
+                skipped += 1
+                no_password += 1
+                continue
+            active = self.repository.active_job(account_id)
+            if active:
+                duplicate += 1
+                jobs.append(active)
+                continue
+            job = self.repository.create_job(account_id, use_proxy, operation="totp_setup")
+            self.repository.add_event(job["id"], "info", "已加入 2FA 开通队列")
+            self.repository.update_account(account_id, status="pending", error="")
+            jobs.append(job)
+            queued += 1
+            await self.submit(str(job["id"]))
+        return {
+            "requested": requested_count,
+            "matched": len(rows),
+            "queued": queued,
+            "duplicate": duplicate,
+            "skipped": skipped,
+            "disabled_skipped": disabled_skipped,
+            "already_configured": already_configured,
+            "no_password": no_password,
+            "use_proxy": bool(use_proxy),
+            "operation": "totp_setup",
+            "jobs": jobs,
+        }
+
     async def _worker(self, index: int) -> None:
         while not self._stopping:
             job_id = await self.queue.get()
@@ -1041,7 +1096,9 @@ class ReauthService:
             except Exception as error:
                 reason = safe_error(error)
                 self.repository.update_job(job_id, status="failed", current_step="finished", error=reason, finished_at=utc_now())
-                self.repository.add_event(job_id, "error", f"重新授权失败：{reason}")
+                job = self.repository.get_job(job_id) or {}
+                prefix = "2FA 开通失败" if str(job.get("operation") or "reauth").strip().lower() == "totp_setup" else "重新授权失败"
+                self.repository.add_event(job_id, "error", f"{prefix}：{reason}")
             finally:
                 self.queue.task_done()
 
@@ -1053,8 +1110,10 @@ class ReauthService:
         if not account:
             self.repository.update_job(job_id, status="failed", current_step="finished", error="账号不存在", finished_at=utc_now())
             return
+        operation = str(job.get("operation") or "reauth").strip().lower()
+        operation_label = "2FA 开通" if operation == "totp_setup" else "重新授权"
         if str(account.get("status") or "").strip().lower() == "disabled":
-            message = "账号已禁用，跳过重新授权"
+            message = f"账号已禁用，跳过{operation_label}"
             self.repository.update_job(
                 job_id,
                 status="cancelled",
@@ -1102,7 +1161,7 @@ class ReauthService:
                     self.repository.add_event(
                         job_id,
                         "warning",
-                        f"授权暂时失败：{error_message or '未知临时错误'}，{delay:g} 秒后自动重试（第 {retry_number}/{max_attempts} 次）",
+                        f"{operation_label}暂时失败：{error_message or '未知临时错误'}，{delay:g} 秒后自动重试（第 {retry_number}/{max_attempts} 次）",
                     )
                     await asyncio.sleep(delay)
                     account = self.repository.get_account(str(account["id"])) or account
@@ -1123,7 +1182,7 @@ class ReauthService:
                     status="disabled" if account_disabled else "failed",
                     error=error_message,
                 )
-                event_prefix = "检测到账号已禁用" if account_disabled else "重新授权失败"
+                event_prefix = "检测到账号已禁用" if account_disabled else f"{operation_label}失败"
                 self.repository.add_event(job_id, "error", f"{event_prefix}：{error_message}")
                 return
 
@@ -1140,21 +1199,34 @@ class ReauthService:
         success = False
         error_message = ""
         try:
+            current_job = self.repository.get_job(job_id) or {}
+            operation = str(current_job.get("operation") or "reauth").strip().lower()
             if use_proxy:
                 self.repository.add_event(job_id, "info", "正在从代理池领取代理")
-                lease = self.proxy_pool.claim(f"reauth:{job_id}:{worker_index}")
+                owner_prefix = "totp-setup" if operation == "totp_setup" else "reauth"
+                lease = self.proxy_pool.claim(f"{owner_prefix}:{job_id}:{worker_index}")
                 proxy_endpoint = redact_proxy(lease.url)
                 self.repository.update_job(job_id, current_step="login", proxy_state="claimed", proxy_endpoint=proxy_endpoint)
                 self.repository.add_event(job_id, "info", f"已领取代理 {proxy_endpoint}，开始建立登录会话")
             else:
                 self.repository.add_event(job_id, "info", "本次授权使用直连")
             loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(self._executor, self._reauthorize_sync, account, lease.url if lease else "", job_id)
-            self.repository.update_job(job_id, current_step="save_token")
-            self.repository.save_token(account["id"], result)
-            await self._auto_upload(account["id"], job_id)
+            if operation == "totp_setup":
+                result = await loop.run_in_executor(self._executor, self._setup_totp_sync, account, lease.url if lease else "", job_id)
+                self.repository.update_job(job_id, current_step="save_totp")
+                if result.get("already_enabled"):
+                    self.repository.add_event(job_id, "info", "账号已经开通 2FA，无需重复设置")
+                else:
+                    self.repository.update_account_totp_secret(account["id"], str(result.get("secret") or ""))
+                    self.repository.add_event(job_id, "info", "2FA 已开通，密钥已安全保存")
+                self.repository.update_account(account["id"], status="success", error="")
+            else:
+                result = await loop.run_in_executor(self._executor, self._reauthorize_sync, account, lease.url if lease else "", job_id)
+                self.repository.update_job(job_id, current_step="save_token")
+                self.repository.save_token(account["id"], result)
+                await self._auto_upload(account["id"], job_id)
             self.repository.update_job(job_id, status="success", current_step="finished", error="", finished_at=utc_now())
-            self.repository.add_event(job_id, "info", "重新授权成功，Token 已保存")
+            self.repository.add_event(job_id, "info", "2FA 开通成功" if operation == "totp_setup" else "重新授权成功，Token 已保存")
             success = True
         except asyncio.CancelledError:
             raise
@@ -1243,6 +1315,40 @@ class ReauthService:
         if not payload.get("access_token") or not payload.get("refresh_token"):
             raise RuntimeError("登录完成但未获取可刷新的 Codex Token")
         return payload
+
+    def _setup_totp_sync(self, account: dict[str, Any], proxy_url: str, job_id: str) -> dict[str, Any]:
+        self.repository.add_event(job_id, "info", "正在登录账号并检查 2FA 状态")
+        flow = AuthFlow(
+            ProtocolConfig(proxy=proxy_url or None),
+            env_overrides={
+                # Keep the normal web-session finalization so
+                # ``get_auth_session`` provides the ChatGPT access token used
+                # by the MFA endpoints; no Codex refresh token is required.
+                "OAUTH_REFRESH_ONLY": "0",
+                "OAUTH_REQUIRE_REFRESH_TOKEN": "0",
+                "OAUTH_CODEX_RT_EXCHANGE": "0",
+                "OAUTH_CODEX_RT_BEFORE_CALLBACK": "0",
+                "OAUTH_EXCHANGE_BEFORE_CALLBACK": "0",
+                "OAUTH_TOKEN_EXCHANGE_FROM_CALLBACK": "0",
+                "OAUTH_SECONDARY_AUTHORIZE_EXCHANGE": "0",
+                "OTP_TIMEOUT": str(self.settings.otp_timeout_seconds),
+            },
+            account_callback=lambda email: self.repository.get_account_by_email(email) or {},
+        )
+        provider = ReauthMailProvider(
+            account=account,
+            repository=self.repository,
+            settings=self.settings,
+            proxy_url=proxy_url,
+            emit=lambda level, message: self.repository.add_event(job_id, level, safe_error(message)),
+            cancel_check=lambda: self._stopping,
+        )
+        flow.run_protocol_login(provider, str(account["email"]), str(account["password"]))
+        self.repository.update_job(job_id, current_step="check_2fa")
+        result = flow.setup_totp(str(account["email"]))
+        if not result.get("already_enabled") and not result.get("activation_succeeded"):
+            raise RuntimeError("2FA 开通未完成")
+        return result
 
 
 class QuotaService:

@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tokens (
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL,
+    operation TEXT NOT NULL DEFAULT 'reauth',
     status TEXT NOT NULL DEFAULT 'pending',
     use_proxy INTEGER NOT NULL DEFAULT 0,
     proxy_state TEXT NOT NULL DEFAULT '',
@@ -163,6 +164,8 @@ class Database:
             if "limit_windows_json" not in quota_columns:
                 connection.execute("ALTER TABLE quotas ADD COLUMN limit_windows_json TEXT NOT NULL DEFAULT '[]'")
             job_columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "operation" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN operation TEXT NOT NULL DEFAULT 'reauth'")
             if "proxy_state" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN proxy_state TEXT NOT NULL DEFAULT ''")
             if "proxy_endpoint" not in job_columns:
@@ -609,12 +612,46 @@ class Repository:
         with self.db.connect() as connection:
             connection.execute("UPDATE accounts SET mailbox_refresh_token=?, updated_at=? WHERE id=?", (token, utc_now(), str(account_id)))
 
-    def create_job(self, account_id: str, use_proxy: bool) -> dict[str, Any]:
+    def update_account_totp_secret(self, account_id: str, secret: str) -> None:
+        """保存已完成激活的 TOTP 密钥；密钥不会出现在公开账号列表。"""
+
+        normalized = str(secret or "").strip().upper()
+        if not re.fullmatch(r"[A-Z2-7]{16,128}", normalized):
+            raise ValueError("TOTP 密钥格式无效")
+        with self.db.connect() as connection:
+            connection.execute(
+                "UPDATE accounts SET totp_secret=?, updated_at=? WHERE id=?",
+                (normalized, utc_now(), str(account_id)),
+            )
+
+    def totp_setup_account_rows(self, account_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+        """返回开通 2FA 所需的最小私有字段，不用于公开 API。"""
+
+        params: list[Any] = []
+        where = ""
+        if account_ids is not None:
+            normalized = list(dict.fromkeys(str(value or "").strip() for value in account_ids if str(value or "").strip()))
+            if not normalized:
+                return []
+            marks = ",".join("?" for _ in normalized)
+            where = f"WHERE id IN ({marks})"
+            params.extend(normalized)
+        with self.db.connect() as connection:
+            rows = connection.execute(
+                f"SELECT id,email,password,status,totp_secret FROM accounts {where} ORDER BY updated_at DESC,email",
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_job(self, account_id: str, use_proxy: bool, *, operation: str = "reauth") -> dict[str, Any]:
+        normalized_operation = str(operation or "reauth").strip().lower()
+        if normalized_operation not in {"reauth", "totp_setup"}:
+            raise ValueError("不支持的任务类型")
         job_id = uuid.uuid4().hex
         now = utc_now()
         proxy_state = "requested" if use_proxy else "direct"
         with self.db.connect() as connection:
-            connection.execute("INSERT INTO jobs(id,account_id,status,use_proxy,proxy_state,created_at,updated_at) VALUES(?,?, 'pending', ?, ?, ?, ?)", (job_id, str(account_id), int(use_proxy), proxy_state, now, now))
+            connection.execute("INSERT INTO jobs(id,account_id,operation,status,use_proxy,proxy_state,created_at,updated_at) VALUES(?,?,?, 'pending', ?, ?, ?, ?)", (job_id, str(account_id), normalized_operation, int(use_proxy), proxy_state, now, now))
             row = connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
         return dict(row)
 

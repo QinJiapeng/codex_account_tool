@@ -666,6 +666,38 @@ def test_manual_liveness_route_accepts_selected_accounts(tmp_path: Path, monkeyp
     assert calls == [["account-1", "account-2"]]
 
 
+def test_setup_2fa_route_passes_selected_ids_and_returns_queue_summary(tmp_path: Path, monkeypatch):
+    settings = Settings(
+        host="127.0.0.1",
+        port=10717,
+        data_dir=tmp_path,
+        worker_count=1,
+        use_proxy_default=False,
+        proxy_lease_seconds=60,
+        proxy_cooldown_seconds=5,
+        outlook_imap_host="outlook.example",
+        outlook_imap_port=993,
+        otp_poll_seconds=2,
+        otp_timeout_seconds=30,
+        quota_timeout_ms=1000,
+        usage_url="https://usage.example",
+        usage_version="test",
+    )
+    calls = []
+
+    async def fake_queue(self, account_ids=None, *, use_proxy=False):
+        calls.append((account_ids, use_proxy))
+        return {"matched": len(account_ids or []), "queued": len(account_ids or []), "skipped": 0, "duplicate": 0}
+
+    monkeypatch.setattr(ReauthService, "queue_totp_setup", fake_queue)
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/accounts/2fa/setup", json={"ids": ["account-1", "account-2"], "use_proxy": True})
+
+    assert response.status_code == 200
+    assert response.json()["queued"] == 2
+    assert calls == [(["account-1", "account-2"], True)]
+
+
 def test_authorization_workbench_contains_import_dialog_and_no_separate_account_tab():
     html = Path("app/static/index.html").read_text(encoding="utf-8")
     script = Path("app/static/app.js").read_text(encoding="utf-8")
@@ -698,7 +730,9 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="account-table"' in html
     assert 'id="reauthConnectionMode"' in html
     assert 'id="reauthTotp"' in html
+    assert 'id="setupTotp"' in html
     assert "/api/reauth/queue-2fa" in script
+    assert "/api/accounts/2fa/setup" in script
     assert 'class="account-action-label">账号操作' in html
     assert "验活状态" in html
     assert 'class="account-action-label">导出与上传' in html

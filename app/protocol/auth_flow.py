@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Optional, Any
-from urllib.parse import urlparse, parse_qs, parse_qsl, urljoin, urlencode, urlunparse
+from urllib.parse import urlparse, parse_qs, parse_qsl, quote, urljoin, urlencode, urlunparse
 
 from .config import Config
 from .fingerprint import (
@@ -2592,6 +2592,171 @@ class AuthFlow:
         except Exception as e:
             logger.warning(f"二次 authorize 交换异常: {e}")
             return False
+
+    @staticmethod
+    def _mfa_info_has_totp(payload: Any) -> bool:
+        """Return whether the ChatGPT account has an active TOTP factor."""
+
+        if not isinstance(payload, dict):
+            return False
+        factors = payload.get("factors")
+        totp_factors = factors.get("totp") if isinstance(factors, dict) else None
+        if not isinstance(totp_factors, list):
+            return False
+        return bool(payload.get("mfa_enabled_v2") and any(
+            isinstance(item, dict)
+            and (str(item.get("factor_type") or item.get("type") or "").lower() == "totp" or item.get("id"))
+            for item in totp_factors
+        ))
+
+    @staticmethod
+    def _normalize_enrolled_totp_secret(value: Any) -> str:
+        normalized = re.sub(r"[\s=]", "", str(value or "")).upper()
+        return normalized if re.fullmatch(r"[A-Z2-7]{16,128}", normalized) else ""
+
+    def _chatgpt_mfa_headers(self, access_token: str, target_path: str) -> dict[str, str]:
+        """Build the browser-like headers required by ChatGPT MFA endpoints."""
+
+        headers = self._common_headers("https://chatgpt.com/")
+        headers.update({
+            "Authorization": f"Bearer {access_token}",
+            "oai-device-id": self.result.device_id or self.session.cookies.get("oai-did", "") or str(uuid.uuid4()),
+            "oai-session-id": str(uuid.uuid4()),
+            "oai-language": "zh-CN",
+            "x-openai-target-path": target_path,
+            "x-openai-target-route": target_path,
+        })
+        return headers
+
+    @staticmethod
+    def _extract_chatgpt_page_access_token(html: Any) -> str:
+        """Extract the web access token embedded in the TOTP enable page."""
+
+        text = str(html or "")
+        for source in (text, text.replace("&quot;", '"').replace("&#x27;", "'")):
+            match = re.search(r"[\"']accessToken[\"']\s*:\s*[\"']((?:\\.|[^\"'\\])+)[\"']", source)
+            if not match:
+                continue
+            value = match.group(1)
+            try:
+                value = json.loads(f'"{value}"')
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            if isinstance(value, str) and len(value) >= 20:
+                return value
+        return ""
+
+    def setup_totp(self, email: str = "") -> dict[str, Any]:
+        """Enroll and activate ChatGPT TOTP 2FA in the current web session.
+
+        The returned secret is intended for the private account store only;
+        callers must not put it into ordinary job events or public responses.
+        """
+
+        _, session_access_token = self.get_auth_session()
+        # Normal web sessions expose ``accessToken``.  Keep the existing
+        # result as a fallback for protocol revisions that only return the
+        # token through the earlier auth payload.
+        access_token = str(session_access_token or self.result.access_token or "").strip()
+        enable_page = self.session.get(
+            "https://chatgpt.com/?action=enable&factor=totp",
+            headers={**self._navigation_headers(), "Referer": "https://chatgpt.com/"},
+            timeout=30,
+        )
+        self._trace_http("mfa_totp_enable_page", enable_page)
+        page_access_token = self._extract_chatgpt_page_access_token(getattr(enable_page, "text", ""))
+        if page_access_token:
+            access_token = page_access_token
+        if not access_token:
+            raise RuntimeError("开通 2FA 失败：未获取 ChatGPT 网页会话 Token")
+
+        info_path = "/backend-api/accounts/mfa_info"
+        info_url = f"https://chatgpt.com{info_path}"
+        info_resp = self.session.get(
+            info_url,
+            headers=self._chatgpt_mfa_headers(access_token, info_path),
+            timeout=30,
+        )
+        self._trace_http("mfa_info_before_totp_setup", info_resp)
+        if not 200 <= int(info_resp.status_code or 0) < 300:
+            raise RuntimeError(f"查询 2FA 状态失败: {_safe_http_error_summary(info_resp)}")
+        try:
+            current_info = info_resp.json()
+        except Exception:
+            current_info = {}
+        if self._mfa_info_has_totp(current_info):
+            return {
+                "email": str(email or self.result.email or "").strip().lower(),
+                "already_enabled": True,
+                "activation_succeeded": False,
+                "secret": "",
+                "otpauth_uri": "",
+            }
+
+        enroll_path = "/backend-api/accounts/mfa/enroll"
+        enroll_resp = self.session.post(
+            f"https://chatgpt.com{enroll_path}",
+            headers=self._chatgpt_mfa_headers(access_token, enroll_path),
+            json={"factor_type": "totp"},
+            timeout=30,
+        )
+        # The enrollment response contains the new secret. Do not send it
+        # through the optional HTTP trace/dump path.
+        if not 200 <= int(enroll_resp.status_code or 0) < 300:
+            raise RuntimeError(f"申请 2FA 密钥失败: {_safe_http_error_summary(enroll_resp)}")
+        try:
+            enrollment = enroll_resp.json()
+        except Exception:
+            enrollment = {}
+        secret = self._normalize_enrolled_totp_secret(enrollment.get("secret") if isinstance(enrollment, dict) else "")
+        session_id = str(enrollment.get("session_id") or "").strip() if isinstance(enrollment, dict) else ""
+        if not secret or not session_id:
+            raise RuntimeError("申请 2FA 密钥失败：响应缺少有效密钥或会话 ID")
+
+        account_email = str(email or self.result.email or "").strip().lower()
+        otpauth_uri = (
+            f"otpauth://totp/{quote(f'OpenAI:{account_email}', safe='')}"
+            f"?{urlencode({'secret': secret, 'issuer': 'OpenAI', 'algorithm': 'SHA1', 'digits': '6', 'period': '30'})}"
+        )
+        activate_path = "/backend-api/accounts/mfa/user/activate_enrollment"
+        activate_resp = self.session.post(
+            f"https://chatgpt.com{activate_path}",
+            headers=self._chatgpt_mfa_headers(access_token, activate_path),
+            json={"code": _totp_now(secret), "factor_type": "totp", "session_id": session_id},
+            timeout=30,
+        )
+        self._trace_http("mfa_activate_totp", activate_resp)
+        if not 200 <= int(activate_resp.status_code or 0) < 300:
+            raise RuntimeError(f"激活 2FA 失败: {_safe_http_error_summary(activate_resp)}")
+        try:
+            activation = activate_resp.json()
+        except Exception:
+            activation = {}
+        if not isinstance(activation, dict) or activation.get("success") is not True:
+            raise RuntimeError("激活 2FA 失败：服务端未确认激活成功")
+
+        confirm_resp = self.session.get(
+            info_url,
+            headers=self._chatgpt_mfa_headers(access_token, info_path),
+            timeout=30,
+        )
+        self._trace_http("mfa_info_after_totp_setup", confirm_resp)
+        if not 200 <= int(confirm_resp.status_code or 0) < 300:
+            raise RuntimeError(f"确认 2FA 状态失败: {_safe_http_error_summary(confirm_resp)}")
+        try:
+            confirmed_info = confirm_resp.json()
+        except Exception:
+            confirmed_info = {}
+        if not self._mfa_info_has_totp(confirmed_info):
+            raise RuntimeError("激活 2FA 后状态确认失败")
+        self.result.totp_secret = secret
+        return {
+            "email": account_email,
+            "already_enabled": False,
+            "activation_succeeded": True,
+            "secret": secret,
+            "otpauth_uri": otpauth_uri,
+        }
 
     # ── Protocol login flow (target: callback/session/refresh) ──
     def run_protocol_login(
