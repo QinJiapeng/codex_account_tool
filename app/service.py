@@ -848,12 +848,13 @@ def parse_four_segment_line(value: str) -> dict[str, str] | None:
     parts = [part.strip() for part in raw.split("----")]
     if len(parts) not in {4, 5}:
         return None
-    email, password, client_id, mailbox_refresh_token = parts[:4]
+    email, password = parts[:2]
     email = email.lower()
     if not re.fullmatch(r"[^@\s]+@[^@\s]+", email):
         return None
     if not password:
         return None
+    client_id, mailbox_refresh_token = parts[2:4]
     if not client_id or len(mailbox_refresh_token) < 20:
         return None
     record = {"email": email, "password": password, "client_id": client_id, "mailbox_refresh_token": mailbox_refresh_token}
