@@ -90,7 +90,7 @@
           </section>
         </div>
         <div class="settings-actions"><button id="saveSettings" type="button">保存设置</button><span id="settingsResult" class="result"></span></div>
-        <p class="hint">定时验活调用 Codex 模型清单接口，只将缺少凭据、Token 明确过期或 HTTP 401 判为失效；403、429 和网络异常不会触发重新授权。手动额度查询仍使用额度接口。重新授权成功后会按上方开关自动上传，上传失败不会回滚授权结果。线程数保存后需要重启服务才能应用。</p>
+        <p class="hint">定时验活调用 Codex 模型清单接口，只将缺少凭据、Token 明确过期或 HTTP 401 判为失效；403、429 和网络异常会自动重试最多 10 次，仍失败后标记账号失败。手动额度查询也会对失败请求自动重试最多 10 次。重新授权成功后会按上方开关自动上传，上传失败不会回滚授权结果。线程数保存后需要重启服务才能应用。</p>
       </section>
     </div>
 

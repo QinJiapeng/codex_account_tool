@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import app.service as service_module
 from app.config import Settings
 from app.db import Database, Repository
 from app.service import ScheduledLivenessService, liveness_failure_is_terminal
@@ -96,7 +97,8 @@ class FakeTokenValidator:
 
 
 @pytest.mark.asyncio
-async def test_scheduled_liveness_queues_only_invalid_tokens_without_overwriting_quota(tmp_path: Path):
+async def test_scheduled_liveness_queues_only_invalid_tokens_without_overwriting_quota(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(service_module, "REAUTH_RETRY_DELAYS_SECONDS", (0.0,) * 9)
     database = Database(tmp_path / "scheduler.db")
     database.initialize()
     repository = Repository(database)
@@ -151,9 +153,9 @@ async def test_scheduled_liveness_queues_only_invalid_tokens_without_overwriting
         "started_at": summary["started_at"],
         "finished_at": summary["finished_at"],
     }
-    assert len(proxy_pool.claimed) == 6
-    assert len(proxy_pool.completed) == 6
-    assert sum(1 for success, _error in proxy_pool.completed if not success) == 1
+    assert len(proxy_pool.claimed) == 33
+    assert len(proxy_pool.completed) == 33
+    assert sum(1 for success, _error in proxy_pool.completed if not success) == 10
     assert len(reauth.calls) == 1
     queued_ids = set(reauth.calls[0]["account_ids"])
     assert queued_ids == {
@@ -174,6 +176,10 @@ async def test_scheduled_liveness_queues_only_invalid_tokens_without_overwriting
     assert states["valid@example.com"] == "valid"
     assert states["unauthorized@example.com"] == "invalid"
     assert states["limited@example.com"] == "rate_limited"
+    account_statuses = {item["email"]: item["status"] for item in account_items}
+    assert account_statuses["forbidden@example.com"] == "failed"
+    assert account_statuses["limited@example.com"] == "failed"
+    assert account_statuses["network@example.com"] == "failed"
 
 
 @pytest.mark.asyncio

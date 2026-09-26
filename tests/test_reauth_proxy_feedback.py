@@ -88,6 +88,16 @@ class TransientThenSuccessReauthService(ReauthService):
         }
 
 
+class AlwaysTransientReauthService(ReauthService):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = 0
+
+    def _reauthorize_sync(self, account: dict[str, object], proxy_url: str, job_id: str) -> dict[str, str]:
+        self.calls += 1
+        raise RuntimeError("协议登录请求失败: HTTP 503")
+
+
 def test_reauth_error_retry_classification():
     assert reauth_error_is_retryable(RuntimeError("登录请求失败: HTTP 503")) is True
     assert reauth_error_is_retryable(RuntimeError("登录失败: invalid_login")) is False
@@ -161,6 +171,26 @@ async def test_reauth_retries_transient_failure_before_marking_account_failed(tm
     assert proxy_pool.completed[-1] == (True, "")
     events = " ".join(item["message"] for item in repository.list_events(str(job["id"])))
     assert "自动重试" in events
+
+
+@pytest.mark.asyncio
+async def test_reauth_exhausts_ten_attempts_before_marking_account_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(service_module, "REAUTH_RETRY_DELAYS_SECONDS", (0.0,) * 9)
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    account = _account(repository)
+    service = AlwaysTransientReauthService(repository, _settings(tmp_path), FakeProxyPool())  # type: ignore[arg-type]
+    job = repository.create_job(str(account["id"]), False)
+    try:
+        await service._run(str(job["id"]), 0)
+    finally:
+        await service.stop()
+
+    stored = repository.get_job(str(job["id"]))
+    stored_account = repository.get_account(str(account["id"]))
+    assert service.calls == 10
+    assert stored and stored["status"] == "failed"
+    assert stored_account and stored_account["status"] == "failed"
 
 
 @pytest.mark.asyncio

@@ -28,8 +28,10 @@ from app.proxy import ProxyLease, ProxyPool, ProxyPoolError, redact_proxy
 
 logger = logging.getLogger(__name__)
 DEFAULT_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-# Five retries after the initial attempt, with a fixed cooldown between tries.
-REAUTH_RETRY_DELAYS_SECONDS = (3.0,) * 5
+# Nine retries after the initial attempt, with a fixed cooldown between tries.
+# The tuple is intentionally shared by authorization, liveness, and quota
+# operations so every button uses the same ten-attempt policy.
+REAUTH_RETRY_DELAYS_SECONDS = (3.0,) * 9
 
 
 class UploadConfigError(RuntimeError):
@@ -783,7 +785,7 @@ def safe_error(value: Any) -> str:
 
 
 def account_is_disabled_error(value: Any) -> bool:
-    """Recognize the explicit upstream signal for a deleted/deactivated account."""
+    """Recognize explicit upstream signals that cannot be retried."""
 
     text = str(value or "").lower()
     return any(marker in text for marker in (
@@ -791,15 +793,28 @@ def account_is_disabled_error(value: Any) -> bool:
         "account_disabled",
         "account disabled",
         "has been deleted or deactivated",
+        "account_banned",
+        "account banned",
+        "account_suspended",
+        "account suspended",
+        "account_blocked",
+        "account blocked",
+        "user_banned",
+        "user suspended",
+        "banned account",
+        "suspended account",
+        "封禁",
+        "被封",
+        "停用",
+        "被冻结",
     ))
 
 
 def reauth_error_is_retryable(value: Any) -> bool:
     """Return whether an authorization error is likely to be transient.
 
-    Full protocol login is safe to retry only for transport/upstream capacity
-    failures.  Explicit account, password, region, and mailbox OAuth errors
-    remain terminal so an automatic retry cannot hide a credential problem.
+    Retry everything except explicit account bans, invalid credentials, and
+    other errors that cannot be fixed by another attempt.
     """
 
     if account_is_disabled_error(value):
@@ -825,31 +840,19 @@ def reauth_error_is_retryable(value: Any) -> bool:
         "wrong_password",
         "password is incorrect",
         "未提供真实密码",
+        "账号不存在",
+        "登录入口未识别",
+        "未配置 outlook 邮箱凭据",
+        "未配置 totp 密钥",
+        "totp 密钥格式无效",
+        "响应缺少 totp 因子",
     )
     if any(marker in text for marker in terminal_markers):
         return False
-    if re.search(r"\bhttp\s*(?:403|408|409|425|429|500|502|503|504|520|521|522|523|524)\b", text):
-        return True
-    transient_markers = (
-        "timeout",
-        "timed out",
-        "超时",
-        "network",
-        "connection",
-        "disconnected",
-        "reset by peer",
-        "proxy error",
-        "tls",
-        "ssl",
-        "连接",
-        "temporarily unavailable",
-        "temporary failure",
-        "rate_limit",
-        "rate limit",
-        "代理池当前没有可用代理",
-        "代理池竞争失败",
-    )
-    return any(marker in text for marker in transient_markers)
+    # Unknown upstream responses are retried as well.  This keeps temporary
+    # protocol changes, malformed responses, and intermittent HTTP failures
+    # from immediately turning an otherwise recoverable account into failed.
+    return True
 
 
 def _normalize_totp_secret(value: Any) -> str:
@@ -1387,6 +1390,70 @@ class QuotaService:
             "active_account_ids": [],
         }
 
+    async def _query_row_with_retries(self, row: Mapping[str, Any], *, use_proxy: bool) -> dict[str, Any]:
+        """Query one account up to ten times before recording a failure."""
+
+        account_id = str(row.get("account_id") or "")
+        email = str(row.get("email") or row.get("account_email") or "")
+        max_attempts = len(REAUTH_RETRY_DELAYS_SECONDS) + 1
+        result: dict[str, Any] = {}
+        for attempt in range(max_attempts):
+            result = {}
+            lease: ProxyLease | None = None
+            try:
+                if use_proxy:
+                    lease = self.proxy_pool.claim(f"quota:{account_id}:{attempt + 1}")
+                client = create_codex_usage_client(
+                    usage_url=self.settings.usage_url,
+                    client_version=self.settings.usage_version,
+                    timeout_ms=self.settings.quota_timeout_ms,
+                )
+                queried = await client.query(row, proxy_url=lease.url if lease else None)
+                result = dict(queried) if isinstance(queried, Mapping) else {
+                    "success": False,
+                    "status": "invalid_response",
+                    "http_status": 0,
+                    "error_code": "INVALID_QUOTA_RESULT",
+                    "error_message": "额度响应格式无效",
+                }
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                message = safe_error(error) or "额度查询失败"
+                result = {
+                    "success": False,
+                    "status": "failed",
+                    "http_status": 0,
+                    "error_code": "QUOTA_FAILED",
+                    "error_message": message,
+                }
+            finally:
+                if lease:
+                    with contextlib.suppress(Exception):
+                        self.proxy_pool.complete(
+                            lease,
+                            success=bool(result.get("success")),
+                            error=str(result.get("error_message") or ""),
+                        )
+
+            result = {"account_id": account_id, "email": email, **result}
+            self.repository.save_quota(account_id, result)
+            if result.get("success"):
+                return result
+            error_text = " ".join(
+                str(result.get(key) or "").strip()
+                for key in ("status", "error_code", "error_message")
+            ).strip()
+            if account_is_disabled_error(error_text):
+                self.repository.update_account(account_id, status="disabled", error=error_text or "账号已禁用")
+                return result
+            if attempt >= max_attempts - 1:
+                self.repository.update_account(account_id, status="failed", error=error_text or "额度查询失败")
+                return result
+            delay = float(REAUTH_RETRY_DELAYS_SECONDS[attempt])
+            await asyncio.sleep(max(0.0, delay))
+        return result
+
     async def refresh(self, account_ids: list[str] | None = None, *, use_proxy: bool = False) -> dict[str, Any]:
         async with self._lock:
             if self.progress["running"]:
@@ -1404,29 +1471,12 @@ class QuotaService:
             results = []
             try:
                 for row in rows:
-                    lease = None
                     self.progress["active_account_id"] = str(row["account_id"])
                     self.progress["active_account_ids"] = [str(row["account_id"])]
-                    try:
-                        if use_proxy:
-                            lease = self.proxy_pool.claim(f"quota:{row['account_id']}")
-                        client = create_codex_usage_client(usage_url=self.settings.usage_url, client_version=self.settings.usage_version, timeout_ms=self.settings.quota_timeout_ms)
-                        result = await client.query(row, proxy_url=lease.url if lease else None)
-                        self.repository.save_quota(str(row["account_id"]), result)
-                        result = {"account_id": row["account_id"], "email": row["email"], **result}
-                        results.append(result)
-                        self.progress["success"] += int(bool(result.get("success")))
-                        self.progress["failed"] += int(not bool(result.get("success")))
-                        if lease:
-                            self.proxy_pool.complete(lease, success=bool(result.get("success")), error=str(result.get("error_message") or ""))
-                    except Exception as error:
-                        message = safe_error(error)
-                        result = {"success": False, "status": "failed", "error_code": "QUOTA_FAILED", "error_message": message, "account_id": row["account_id"], "email": row["email"]}
-                        self.repository.save_quota(str(row["account_id"]), result)
-                        results.append(result)
-                        self.progress["failed"] += 1
-                        if lease:
-                            self.proxy_pool.complete(lease, success=False, error=message)
+                    result = await self._query_row_with_retries(row, use_proxy=use_proxy)
+                    results.append(result)
+                    self.progress["success"] += int(bool(result.get("success")))
+                    self.progress["failed"] += int(not bool(result.get("success")))
                     self.progress["completed"] += 1
             finally:
                 self.progress["running"] = False
@@ -1643,9 +1693,39 @@ class ScheduledLivenessService:
             "status": str(result.get("status") or ""),
             "http_status": http_status,
             "error_code": str(result.get("error_code") or ""),
+            "error_message": safe_error(result.get("error_message") or result.get("message") or ""),
         }
         self.repository.save_liveness_result(str(row.get("account_id") or ""), normalized)
         return normalized
+
+    async def _check_account_with_retries(self, row: Mapping[str, Any], run_id: str) -> dict[str, Any]:
+        """Retry a non-terminal liveness failure before marking the account failed."""
+
+        max_attempts = len(REAUTH_RETRY_DELAYS_SECONDS) + 1
+        account_id = str(row.get("account_id") or "")
+        result: dict[str, Any] = {}
+        for attempt in range(max_attempts):
+            result = await self._check_account(row, run_id)
+            if result.get("success"):
+                return result
+            # A known invalid token is handed to the reauthorization queue by
+            # run_once.  It is not a liveness retry because the token cannot
+            # become valid without a new authorization.
+            if liveness_failure_is_terminal(result):
+                return result
+            error_text = " ".join(
+                str(result.get(key) or "").strip()
+                for key in ("status", "error_code", "error_message")
+            ).strip()
+            if account_is_disabled_error(error_text):
+                self.repository.update_account(account_id, status="disabled", error=error_text or "账号已禁用")
+                return result
+            if attempt >= max_attempts - 1:
+                self.repository.update_account(account_id, status="failed", error=error_text or "验活失败")
+                return result
+            delay = float(REAUTH_RETRY_DELAYS_SECONDS[attempt])
+            await asyncio.sleep(max(0.0, delay))
+        return result
 
     async def run_once(self, account_ids: list[str] | None = None) -> dict[str, Any]:
         if self._run_lock.locked():
@@ -1673,7 +1753,7 @@ class ScheduledLivenessService:
 
                 async def checked(row: Mapping[str, Any]) -> dict[str, Any]:
                     async with semaphore:
-                        return await self._check_account(row, run_id)
+                        return await self._check_account_with_retries(row, run_id)
 
                 results = await asyncio.gather(*(checked(row) for row in rows))
                 invalid_ids = [
