@@ -1382,6 +1382,11 @@ class ReauthService:
 
 
 class QuotaService:
+    # The usage endpoint is I/O-bound, but sending an unbounded burst can
+    # trigger upstream 429s.  Keep a modest batch limit while still allowing
+    # independent accounts to progress in parallel.
+    MAX_CONCURRENCY = 20
+
     def __init__(self, repository: Repository, settings: Settings, proxy_pool: ProxyPool):
         self.repository = repository
         self.settings = settings
@@ -1477,14 +1482,33 @@ class QuotaService:
             }
             results = []
             try:
-                for row in rows:
-                    self.progress["active_account_id"] = str(row["account_id"])
-                    self.progress["active_account_ids"] = [str(row["account_id"])]
-                    result = await self._query_row_with_retries(row, use_proxy=use_proxy)
-                    results.append(result)
-                    self.progress["success"] += int(bool(result.get("success")))
-                    self.progress["failed"] += int(not bool(result.get("success")))
-                    self.progress["completed"] += 1
+                concurrency = min(
+                    self.MAX_CONCURRENCY,
+                    max(1, int(getattr(self.settings, "worker_count", 1))),
+                )
+                semaphore = asyncio.Semaphore(concurrency)
+                active_ids: set[str] = set()
+
+                async def query_row(row: Mapping[str, Any]) -> dict[str, Any]:
+                    account_id = str(row.get("account_id") or "")
+                    async with semaphore:
+                        active_ids.add(account_id)
+                        self.progress["active_account_ids"] = sorted(active_ids)
+                        self.progress["active_account_id"] = account_id
+                        try:
+                            result = await self._query_row_with_retries(row, use_proxy=use_proxy)
+                            self.progress["success"] += int(bool(result.get("success")))
+                            self.progress["failed"] += int(not bool(result.get("success")))
+                            self.progress["completed"] += 1
+                            return result
+                        finally:
+                            active_ids.discard(account_id)
+                            self.progress["active_account_ids"] = sorted(active_ids)
+                            self.progress["active_account_id"] = next(iter(active_ids), "")
+
+                # gather preserves input order while allowing up to the
+                # bounded number of HTTP requests to run concurrently.
+                results = list(await asyncio.gather(*(query_row(row) for row in rows)))
             finally:
                 self.progress["running"] = False
                 self.progress["active_account_id"] = ""
