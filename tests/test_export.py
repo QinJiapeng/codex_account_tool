@@ -497,12 +497,12 @@ def test_api_list_hides_credentials_and_export_is_explicit(tmp_path: Path, monke
         assert "management-secret" not in updated_settings.text
         assert "sub2api-secret" not in updated_settings.text
         assert updated_settings.json()["restart_required"] is True
-        max_workers = client.patch("/api/settings", json={"worker_count": 200})
+        max_workers = client.patch("/api/settings", json={"worker_count": 1000})
         assert max_workers.status_code == 200
-        assert max_workers.json()["settings"]["worker_count"] == 200
-        too_many_workers = client.patch("/api/settings", json={"worker_count": 201})
+        assert max_workers.json()["settings"]["worker_count"] == 1000
+        too_many_workers = client.patch("/api/settings", json={"worker_count": 1001})
         assert too_many_workers.status_code == 422
-        assert "1 到 200" in too_many_workers.json()["detail"]
+        assert "1 到 1000" in too_many_workers.json()["detail"]
         settings_view = client.get("/api/settings")
         assert settings_view.status_code == 200
         assert "management-secret" not in settings_view.text

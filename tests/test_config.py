@@ -26,10 +26,10 @@ def test_project_defaults_match_shared_settings(monkeypatch, tmp_path: Path):
     assert settings.scheduled_liveness_interval_minutes == 5
 
 
-def test_worker_count_is_capped_at_200(monkeypatch, tmp_path: Path):
+def test_worker_count_is_capped_at_1000(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("REAUTH_WORKERS", "250")
+    monkeypatch.setenv("REAUTH_WORKERS", "1250")
 
     settings = Settings.from_env()
 
-    assert settings.worker_count == 200
+    assert settings.worker_count == 1000

@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.config import Settings
+from app.config import MAX_WORKER_COUNT, Settings
 from app.db import Database, Repository
 from app.proxy import ProxyPool
 from app.service import (
@@ -99,13 +99,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         config.sub2api_api_url = str(preferences.get("sub2api_api_url", config.sub2api_api_url) or "")
         config.sub2api_admin_api_key = str(preferences.get("sub2api_admin_api_key", config.sub2api_admin_api_key) or "")
         try:
-            config.worker_count = min(200, max(1, int(preferences.get("worker_count", config.worker_count))))
+            config.worker_count = min(MAX_WORKER_COUNT, max(1, int(preferences.get("worker_count", config.worker_count))))
             config.scheduled_liveness_interval_minutes = min(10_080, max(5, int(preferences.get("scheduled_liveness_interval_minutes", config.scheduled_liveness_interval_minutes))))
             config.cpa_api_timeout_seconds = min(120, max(1, int(preferences.get("cpa_api_timeout_seconds", config.cpa_api_timeout_seconds))))
             config.sub2api_api_timeout_seconds = min(120, max(1, int(preferences.get("sub2api_api_timeout_seconds", config.sub2api_api_timeout_seconds))))
             config.sub2api_group_id = max(0, int(preferences.get("sub2api_group_id", config.sub2api_group_id)))
         except (TypeError, ValueError):
-            config.worker_count = min(200, max(1, int(config.worker_count)))
+            config.worker_count = min(MAX_WORKER_COUNT, max(1, int(config.worker_count)))
             config.scheduled_liveness_interval_minutes = min(10_080, max(5, int(config.scheduled_liveness_interval_minutes)))
             config.cpa_api_timeout_seconds = min(120, max(1, int(config.cpa_api_timeout_seconds)))
             config.sub2api_api_timeout_seconds = min(120, max(1, int(config.sub2api_api_timeout_seconds)))
@@ -362,13 +362,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if "worker_count" in body:
             value = body["worker_count"]
             if isinstance(value, bool):
-                raise HTTPException(status_code=422, detail="worker_count 必须是 1 到 200 的整数")
+                raise HTTPException(status_code=422, detail=f"worker_count 必须是 1 到 {MAX_WORKER_COUNT} 的整数")
             try:
                 worker_count = int(value)
             except (TypeError, ValueError, OverflowError) as error:
-                raise HTTPException(status_code=422, detail="worker_count 必须是 1 到 200 的整数") from error
-            if worker_count < 1 or worker_count > 200:
-                raise HTTPException(status_code=422, detail="worker_count 必须是 1 到 200 的整数")
+                raise HTTPException(status_code=422, detail=f"worker_count 必须是 1 到 {MAX_WORKER_COUNT} 的整数") from error
+            if worker_count < 1 or worker_count > MAX_WORKER_COUNT:
+                raise HTTPException(status_code=422, detail=f"worker_count 必须是 1 到 {MAX_WORKER_COUNT} 的整数")
         scheduled_liveness_interval_minutes = int(settings.scheduled_liveness_interval_minutes)
         if "scheduled_liveness_interval_minutes" in body:
             value = body["scheduled_liveness_interval_minutes"]

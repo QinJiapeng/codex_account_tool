@@ -72,7 +72,7 @@
           <label class="setting-option"><input id="settingUseProxy" type="checkbox" checked><span><strong>使用代理池</strong><small>授权、额度查询和定时验活统一使用代理池；默认开启。</small></span></label>
           <label class="setting-option"><input id="settingAutoCpa" type="checkbox" checked><span><strong>授权成功后自动上传 CPA</strong><small>启用前请先完成下方 CPA 上传配置。</small></span></label>
           <label class="setting-option"><input id="settingAutoSub2Api" type="checkbox"><span><strong>授权成功后自动上传 Sub2API</strong><small>启用前请先完成下方 Sub2API 上传配置。</small></span></label>
-          <label class="setting-option setting-worker"><span><strong>授权线程数</strong><small>建议按本机网络和代理池规模设置，范围 1–200。</small></span><input id="settingWorkerCount" type="number" min="1" max="200" step="1" value="20"></label>
+          <label class="setting-option setting-worker"><span><strong>授权线程数</strong><small>建议按本机网络和代理池规模设置，范围 1–1000。</small></span><input id="settingWorkerCount" type="number" min="1" max="1000" step="1" value="20"></label>
           <label class="setting-option"><input id="settingScheduledLiveness" type="checkbox" checked><span><strong>启用定时验活</strong><small>检查已有 Token，只对明确失效的账号自动重新授权。</small></span></label>
           <label class="setting-option"><input id="forceUpload" type="checkbox"><span><strong>上传时强制重传</strong><small>忽略本地已上传记录，每次上传都重新发送；默认关闭。</small></span></label>
           <label class="setting-option setting-worker"><span><strong>验活执行频率（分钟）</strong><small>范围 5–10080；修改保存后立即重新计时。</small></span><input id="settingScheduledLivenessInterval" type="number" min="5" max="10080" step="1" value="5"></label>

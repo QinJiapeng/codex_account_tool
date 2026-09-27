@@ -237,7 +237,7 @@ user@example.com----chatgpt-password----outlook-client-id----outlook-refresh-tok
 | `APP_HOST` | `127.0.0.1` | 本地监听地址 |
 | `APP_PORT` | `10717` | 网页端口 |
 | `DATA_DIR` | `./data` | SQLite 数据目录 |
-| `REAUTH_WORKERS` | `20` | 重新授权线程数（1–200），修改后需重启 |
+| `REAUTH_WORKERS` | `20` | 重新授权线程数（1–1000），修改后需重启 |
 | `USE_PROXY_DEFAULT` | `true` | 是否默认使用代理池 |
 | `PROXY_LEASE_SECONDS` | `1200` | 代理租约时长 |
 | `PROXY_COOLDOWN_SECONDS` | `60` | 代理失败后的冷却时间 |

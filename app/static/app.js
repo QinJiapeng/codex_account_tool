@@ -1091,8 +1091,8 @@ $("uploadSub2Api").onclick = () => uploadAccounts("/api/accounts/upload-sub2api"
 $("saveSettings").onclick = async () => {
   try {
     const workerCount = Number($("settingWorkerCount").value);
-    if (!Number.isInteger(workerCount) || workerCount < 1 || workerCount > 200) {
-      throw new Error("授权线程数必须是 1 到 200 的整数");
+    if (!Number.isInteger(workerCount) || workerCount < 1 || workerCount > 1000) {
+      throw new Error("授权线程数必须是 1 到 1000 的整数");
     }
     const scheduledLivenessInterval = Number($("settingScheduledLivenessInterval").value);
     if (!Number.isInteger(scheduledLivenessInterval) || scheduledLivenessInterval < 5 || scheduledLivenessInterval > 10080) {
