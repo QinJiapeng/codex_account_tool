@@ -637,6 +637,14 @@ def test_api_status_filter_and_targeted_retry_routes(tmp_path: Path, monkeypatch
         assert disabled_filtered.json()["status"] == "disabled"
         assert [item["email"] for item in disabled_filtered.json()["items"]] == ["disabled@example.com"]
 
+        multi_filtered = client.get(
+            "/api/accounts?authorization_status=failed&quota_status=rate_limited&page=1&page_size=20"
+        )
+        assert multi_filtered.status_code == 200
+        assert multi_filtered.json()["authorization_status"] == "failed"
+        assert multi_filtered.json()["quota_status"] == "rate_limited"
+        assert [item["email"] for item in multi_filtered.json()["items"]] == ["failed@example.com"]
+
         retry_reauth = client.post("/api/reauth/retry-failed")
         assert retry_reauth.status_code == 200
         assert retry_reauth.json()["matched"] == 1

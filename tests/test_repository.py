@@ -223,6 +223,10 @@ def test_account_list_search_matches_totp_authorization_and_quota_statuses(tmp_p
     assert [item["email"] for item in repository.list_accounts(query="0")[0]] == ["quota-zero@example.com"]
     assert [item["email"] for item in repository.list_accounts(query="无额度")[0]] == ["quota-unlimited@example.com"]
     assert [item["email"] for item in repository.list_accounts(query="邮箱已禁用")[0]] == ["mailbox-disabled@example.com"]
+    assert [item["email"] for item in repository.list_accounts(totp_status="enabled")[0]] == ["totp@example.com"]
+    assert {item["email"] for item in repository.list_accounts(quota_status="rate_limited")[0]} == {"quota-limited@example.com"}
+    assert [item["email"] for item in repository.list_accounts(authorization_status="disabled")[0]] == ["mailbox-disabled@example.com"]
+    assert [item["email"] for item in repository.list_accounts(query="quota", quota_status="pending")[0]] == ["quota-pending@example.com"]
 
 
 def test_initialize_migrates_deactivated_failures_to_disabled_status(tmp_path: Path):

@@ -181,17 +181,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page_size: int | None = Query(None, ge=1, le=5000),
         q: str = Query("", max_length=200),
         status: str = Query("", max_length=40),
+        authorization_status: str = Query("", max_length=40),
+        totp_status: str = Query("", max_length=40),
+        quota_status: str = Query("", max_length=40),
     ) -> dict[str, Any]:
         paged = page is not None or page_size is not None
         effective_size = int(page_size if page_size is not None else limit)
         effective_page = int(page if page is not None else (offset // effective_size) + 1)
         effective_offset = (effective_page - 1) * effective_size if paged else offset
-        items, total = request.app.state.repository.list_accounts(effective_size, effective_offset, q, status)
+        items, total = request.app.state.repository.list_accounts(
+            effective_size,
+            effective_offset,
+            q,
+            status,
+            authorization_status=authorization_status,
+            totp_status=totp_status,
+            quota_status=quota_status,
+        )
         total_pages = max(1, (total + effective_size - 1) // effective_size)
         if paged and total and effective_page > total_pages:
             effective_page = total_pages
             effective_offset = (effective_page - 1) * effective_size
-            items, total = request.app.state.repository.list_accounts(effective_size, effective_offset, q, status)
+            items, total = request.app.state.repository.list_accounts(
+                effective_size,
+                effective_offset,
+                q,
+                status,
+                authorization_status=authorization_status,
+                totp_status=totp_status,
+                quota_status=quota_status,
+            )
+        normalized_authorization_status = str(authorization_status or "").strip().lower()
+        if normalized_authorization_status not in {"pending", "running", "success", "failed", "disabled"}:
+            normalized_authorization_status = str(status or "").strip().lower()
+        normalized_totp_status = str(totp_status or "").strip().lower()
+        normalized_quota_status = str(quota_status or "").strip().lower()
         return {
             "items": items,
             "total": total,
@@ -201,7 +225,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "page_size": effective_size,
             "total_pages": total_pages,
             "q": q.strip(),
-            "status": status.strip().lower() if status.strip().lower() in {"pending", "running", "success", "failed", "disabled"} else "",
+            "status": normalized_authorization_status if normalized_authorization_status in {"pending", "running", "success", "failed", "disabled"} else "",
+            "authorization_status": normalized_authorization_status if normalized_authorization_status in {"pending", "running", "success", "failed", "disabled"} else "",
+            "totp_status": normalized_totp_status if normalized_totp_status in {"pending", "running", "enabled", "disabled"} else "",
+            "quota_status": normalized_quota_status if normalized_quota_status in {"pending", "running", "success", "failed", "rate_limited", "unauthorized", "forbidden", "zero", "unlimited"} else "",
         }
 
     @application.delete("/api/accounts")

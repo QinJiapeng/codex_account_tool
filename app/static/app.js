@@ -23,9 +23,15 @@ const initialAccountParams = new URLSearchParams(window.location.search);
 const initialAccountPage = Number(initialAccountParams.get("page"));
 const initialAccountPageSize = Number(initialAccountParams.get("page_size"));
 let accountSearchQuery = String(initialAccountParams.get("q") || "").slice(0, 200);
-const validAccountStatuses = ["", "pending", "running", "success", "failed", "disabled"];
-const initialAccountStatus = String(initialAccountParams.get("status") || "").toLowerCase();
-let accountStatusFilter = validAccountStatuses.includes(initialAccountStatus) ? initialAccountStatus : "";
+const validAuthorizationFilters = ["", "pending", "running", "success", "failed", "disabled"];
+const validTotpFilters = ["", "pending", "running", "enabled", "disabled"];
+const validQuotaFilters = ["", "pending", "running", "success", "failed", "rate_limited", "unauthorized", "forbidden", "zero", "unlimited"];
+const initialAuthorizationFilter = String(initialAccountParams.get("authorization_status") || initialAccountParams.get("status") || "").toLowerCase();
+const initialTotpFilter = String(initialAccountParams.get("totp_status") || "").toLowerCase();
+const initialQuotaFilter = String(initialAccountParams.get("quota_status") || "").toLowerCase();
+let accountAuthorizationFilter = validAuthorizationFilters.includes(initialAuthorizationFilter) ? initialAuthorizationFilter : "";
+let accountTotpFilter = validTotpFilters.includes(initialTotpFilter) ? initialTotpFilter : "";
+let accountQuotaFilter = validQuotaFilters.includes(initialQuotaFilter) ? initialQuotaFilter : "";
 const initialProxyPage = Number(initialAccountParams.get("proxy_page"));
 const initialProxyPageSize = Number(initialAccountParams.get("proxy_page_size"));
 let accountGlobalTotal = 0;
@@ -509,8 +515,12 @@ function syncAccountListUrl() {
   url.searchParams.set("page_size", String(accountPagination.pageSize));
   if (accountSearchQuery.trim()) url.searchParams.set("q", accountSearchQuery.trim());
   else url.searchParams.delete("q");
-  if (accountStatusFilter) url.searchParams.set("status", accountStatusFilter);
-  else url.searchParams.delete("status");
+  if (accountAuthorizationFilter) url.searchParams.set("authorization_status", accountAuthorizationFilter);
+  else url.searchParams.delete("authorization_status");
+  if (accountTotpFilter) url.searchParams.set("totp_status", accountTotpFilter);
+  else url.searchParams.delete("totp_status");
+  if (accountQuotaFilter) url.searchParams.set("quota_status", accountQuotaFilter);
+  else url.searchParams.delete("quota_status");
   url.searchParams.set("proxy_page", String(proxyPagination.page));
   url.searchParams.set("proxy_page_size", String(proxyPagination.pageSize));
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
@@ -685,7 +695,9 @@ async function refreshData({showError = true} = {}) {
       page_size: String(accountPagination.pageSize),
     });
     if (accountSearchQuery.trim()) accountParams.set("q", accountSearchQuery.trim());
-    if (accountStatusFilter) accountParams.set("status", accountStatusFilter);
+    if (accountAuthorizationFilter) accountParams.set("authorization_status", accountAuthorizationFilter);
+    if (accountTotpFilter) accountParams.set("totp_status", accountTotpFilter);
+    if (accountQuotaFilter) accountParams.set("quota_status", accountQuotaFilter);
     const proxyParams = new URLSearchParams({
       page: String(proxyPagination.page),
       page_size: String(proxyPagination.pageSize),
@@ -785,8 +797,20 @@ $("accountSearch").addEventListener("input", (event) => {
   accountSearchTimer = window.setTimeout(() => refreshData(), 250);
 });
 
-$("accountStatusFilter").addEventListener("change", (event) => {
-  accountStatusFilter = String(event.target.value || "").toLowerCase();
+$("accountAuthorizationFilter").addEventListener("change", (event) => {
+  accountAuthorizationFilter = String(event.target.value || "").toLowerCase();
+  accountPagination.page = 1;
+  refreshData();
+});
+
+$("accountTotpFilter").addEventListener("change", (event) => {
+  accountTotpFilter = String(event.target.value || "").toLowerCase();
+  accountPagination.page = 1;
+  refreshData();
+});
+
+$("accountQuotaFilter").addEventListener("change", (event) => {
+  accountQuotaFilter = String(event.target.value || "").toLowerCase();
   accountPagination.page = 1;
   refreshData();
 });
@@ -1102,7 +1126,9 @@ $("saveSettings").onclick = async () => {
   } catch (error) { $("settingsResult").textContent = error.message; }
 };
 $("accountSearch").value = accountSearchQuery;
-$("accountStatusFilter").value = validAccountStatuses.includes(accountStatusFilter) ? accountStatusFilter : "";
+$("accountAuthorizationFilter").value = validAuthorizationFilters.includes(accountAuthorizationFilter) ? accountAuthorizationFilter : "";
+$("accountTotpFilter").value = validTotpFilters.includes(accountTotpFilter) ? accountTotpFilter : "";
+$("accountQuotaFilter").value = validQuotaFilters.includes(accountQuotaFilter) ? accountQuotaFilter : "";
 $("accountPageSize").value = String(accountPagination.pageSize);
 $("accountPage").value = String(accountPagination.page);
 $("proxyPageSize").value = String(proxyPagination.pageSize);

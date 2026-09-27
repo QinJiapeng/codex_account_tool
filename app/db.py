@@ -402,13 +402,17 @@ class Repository:
         offset: int = 0,
         query: str = "",
         status: str = "",
+        authorization_status: str = "",
+        totp_status: str = "",
+        quota_status: str = "",
     ) -> tuple[list[dict[str, Any]], int]:
         limit = min(max(int(limit), 1), 5000)
         offset = max(int(offset), 0)
         tokens = [token.lower() for token in str(query or "").split() if token.strip()]
         where_parts: list[str] = []
         params: list[Any] = []
-        normalized_status = str(status or "").strip().lower()
+        requested_authorization_status = str(authorization_status or "").strip().lower()
+        normalized_status = requested_authorization_status if requested_authorization_status in {"pending", "running", "success", "failed", "disabled"} else str(status or "").strip().lower()
         if normalized_status in {"pending", "running", "success", "failed", "disabled"}:
             where_parts.append("lower(a.status)=?")
             params.append(normalized_status)
@@ -466,6 +470,45 @@ class Repository:
                   AND j.status='running'
             )
         """
+
+        normalized_totp_status = str(totp_status or "").strip().lower()
+        if normalized_totp_status == "enabled":
+            where_parts.append("trim(COALESCE(a.totp_secret, '')) <> ''")
+        elif normalized_totp_status == "disabled":
+            where_parts.append(f"trim(COALESCE(a.totp_secret, '')) = '' AND NOT ({active_totp_job})")
+        elif normalized_totp_status == "running":
+            where_parts.append(running_totp_job)
+        elif normalized_totp_status == "pending":
+            where_parts.append(pending_totp_job)
+
+        normalized_quota_status = str(quota_status or "").strip().lower()
+        if normalized_quota_status == "pending":
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM tokens t WHERE t.account_id=a.id) "
+                "AND (q.account_id IS NULL OR lower(COALESCE(q.status, '')) IN ('', 'pending'))"
+            )
+        elif normalized_quota_status == "running":
+            where_parts.append("lower(COALESCE(q.status, ''))='running'")
+        elif normalized_quota_status == "success":
+            where_parts.append("lower(COALESCE(q.status, ''))='success'")
+        elif normalized_quota_status == "failed":
+            where_parts.append(
+                "q.account_id IS NOT NULL AND lower(COALESCE(q.status, '')) NOT IN ('', 'success', 'pending', 'running')"
+            )
+        elif normalized_quota_status == "rate_limited":
+            where_parts.append("(lower(COALESCE(q.status, ''))='rate_limited' OR q.http_status=429)")
+        elif normalized_quota_status == "unauthorized":
+            where_parts.append("lower(COALESCE(q.status, ''))='unauthorized'")
+        elif normalized_quota_status == "forbidden":
+            where_parts.append("lower(COALESCE(q.status, ''))='forbidden'")
+        elif normalized_quota_status == "unlimited":
+            where_parts.append("COALESCE(q.credits_unlimited, 0)=1")
+        elif normalized_quota_status == "zero":
+            where_parts.append(
+                "q.account_id IS NOT NULL AND lower(COALESCE(q.status, ''))='success' "
+                "AND COALESCE(q.credits_unlimited, 0)=0 AND "
+                "(q.credits_balance=0 OR (q.credits_balance IS NULL AND COALESCE(q.credits_has, 0)=0))"
+            )
 
         for token in tokens:
             conditions = [
