@@ -78,6 +78,24 @@ def test_totp_export_does_not_require_oauth_token(tmp_path: Path):
     assert repository.export_account_records() == []
 
 
+def test_count_accounts_without_tokens_distinguishes_selected_unauthorized_accounts(tmp_path: Path):
+    database = Database(tmp_path / "token-count.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "authorized@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "pending@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+    ])
+    authorized = repository.get_account_by_email("authorized@example.com")
+    pending = repository.get_account_by_email("pending@example.com")
+    assert authorized and pending
+    repository.save_token(authorized["id"], {
+        "email": authorized["email"], "access_token": "access", "refresh_token": "refresh",
+    })
+
+    assert repository.count_accounts_without_tokens([authorized["id"], pending["id"], "missing"]) == 1
+
+
 def test_account_list_exposes_liveness_state_and_token_refresh_marks_it_valid(tmp_path: Path):
     database = Database(tmp_path / "liveness.db")
     database.initialize()
@@ -396,6 +414,25 @@ def test_successful_upload_ids_are_platform_scoped_and_token_refresh_invalidates
     assert repository.successful_upload_account_ids("cpa", [account["id"]]) == set()
     items, _ = repository.list_accounts()
     assert items[0]["upload_statuses"]["cpa"]["status"] == "pending"
+
+
+def test_save_upload_statuses_accepts_count_only_success_for_multiple_records(tmp_path: Path):
+    database = Database(tmp_path / "upload-count-only.db")
+    database.initialize()
+    repository = Repository(database)
+    repository.import_accounts([
+        {"email": "first@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "a" * 20},
+        {"email": "second@example.com", "password": "pw", "client_id": "cid", "mailbox_refresh_token": "b" * 20},
+    ])
+    first = repository.get_account_by_email("first@example.com")
+    second = repository.get_account_by_email("second@example.com")
+    assert first and second
+    records = [{"id": first["id"], "email": first["email"]}, {"id": second["id"], "email": second["email"]}]
+    repository.save_upload_statuses("sub2api", records, {"requested": 2, "uploaded": 2, "failed": 0})
+
+    items, _ = repository.list_accounts()
+    statuses = {item["email"]: item["upload_statuses"]["sub2api"]["status"] for item in items}
+    assert statuses == {"first@example.com": "success", "second@example.com": "success"}
 
 
 def test_quota_summary_aggregates_statuses_and_credit_tiers(tmp_path: Path):

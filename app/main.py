@@ -477,7 +477,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_authorized_cpa(request: Request) -> dict[str, Any]:
         body = await json_body(request)
         repository: Repository = request.app.state.repository
-        all_records = repository.export_account_records(ids_from_body(body))
+        account_ids = ids_from_body(body)
+        all_records = repository.export_account_records(account_ids)
+        unauthorized = repository.count_accounts_without_tokens(account_ids or []) if account_ids is not None else 0
         force = bool_from_body(body, "force", bool(request.app.state.settings.force_upload))
         records, skipped = split_upload_records(repository, "cpa", all_records, force=force)
         try:
@@ -492,6 +494,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result = merge_upload_skip_result(result, skipped)
             else:
                 result = skipped_upload_result(all_records)
+            result["unauthorized"] = unauthorized
             repository.save_upload_statuses("cpa", all_records, result)
             return result
         except UploadConfigError as error:
@@ -510,7 +513,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def upload_authorized_sub2api(request: Request) -> dict[str, Any]:
         body = await json_body(request)
         repository: Repository = request.app.state.repository
-        all_records = repository.export_account_records(ids_from_body(body))
+        account_ids = ids_from_body(body)
+        all_records = repository.export_account_records(account_ids)
+        unauthorized = repository.count_accounts_without_tokens(account_ids or []) if account_ids is not None else 0
         force = bool_from_body(body, "force", bool(request.app.state.settings.force_upload))
         records, skipped = split_upload_records(repository, "sub2api", all_records, force=force)
         try:
@@ -526,6 +531,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result = merge_upload_skip_result(result, skipped)
             else:
                 result = skipped_upload_result(all_records)
+            result["unauthorized"] = unauthorized
             repository.save_upload_statuses("sub2api", all_records, result)
             return result
         except UploadConfigError as error:

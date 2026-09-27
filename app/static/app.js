@@ -119,6 +119,20 @@ const accountOperationConfig = {
   },
 };
 
+function selectedAccountIds() {
+  const checkboxes = [...document.querySelectorAll(".account-check")];
+  // The checkbox is the visible source of truth. Rebuild the set before every
+  // batch action so UI and submitted IDs cannot drift apart.
+  selectedAccounts.clear();
+  checkboxes.forEach((checkbox) => {
+    if (checkbox.checked) {
+      const id = String(checkbox.dataset.id || "").trim();
+      if (id) selectedAccounts.add(id);
+    }
+  });
+  return [...selectedAccounts];
+}
+
 function selectedAccountOperation() {
   const type = String($("retryAuthorizationType")?.value || "reauth");
   return accountOperationConfig[type] ? type : "reauth";
@@ -650,7 +664,7 @@ function updateAccountSelectionState() {
     selectAll.indeterminate = boxes.some((box) => box.checked) && !selectAll.checked;
     selectAll.disabled = boxes.length === 0;
   }
-  const count = selectedAccounts.size;
+  const count = selectedAccountIds().length;
   const hasAccounts = accountGlobalTotal > 0 || count > 0;
   $("selectionCount").textContent = count ? `已选择 ${count} 个账号` : "未选择账号";
   const operationType = selectedAccountOperation();
@@ -876,9 +890,10 @@ async function runAccountAction(path) {
   const kind = isReauth ? "reauth" : "quota";
   const busyKey = `${kind}Busy`;
   if (operationState[busyKey]) return;
-  const selected = selectedAccounts.size > 0;
-  const ids = selected
-    ? [...selectedAccounts]
+  const ids = selectedAccountIds();
+  const selected = ids.length > 0;
+  const targetIds = selected
+    ? ids
     : [...accountSnapshot.values()].filter((account) => kind !== "quota" || account.has_token).map((account) => String(account.id));
   const targetCount = selected ? ids.length : kind === "quota" ? accountAuthorizedTotal : accountGlobalTotal;
   operationState[busyKey] = true;
@@ -890,7 +905,7 @@ async function runAccountAction(path) {
   setAccountResult("actionResult", kind === "reauth"
     ? `正在以${requestedConnection}提交 ${targetCount} 个账号的重新授权，请稍候…`
     : `正在查询 ${targetCount} 个账号的额度，请稍候…`);
-  const body = selected ? {ids} : {};
+  const body = selected ? {ids: targetIds} : {};
   try {
     const result = await api(path, {method: "POST", body: JSON.stringify(body)});
     if (isReauth) {
@@ -920,8 +935,8 @@ async function runAccountAction(path) {
 
 async function runTotpSetupAction() {
   if (operationState.totpSetupBusy) return;
-  const selected = selectedAccounts.size > 0;
-  const ids = selected ? [...selectedAccounts] : [];
+  const ids = selectedAccountIds();
+  const selected = ids.length > 0;
   operationState.totpSetupBusy = true;
   operationState.totpSetupIds = new Set(ids);
   operationState.totpSetupTargetCount = selected ? ids.length : "符合条件账号";
@@ -952,8 +967,8 @@ async function runTotpSetupAction() {
 
 async function runLivenessAction() {
   if (operationState.livenessBusy) return;
-  const selected = selectedAccounts.size > 0;
-  const ids = selected ? [...selectedAccounts] : [];
+  const ids = selectedAccountIds();
+  const selected = ids.length > 0;
   const targetCount = selected ? ids.length : accountAuthorizedTotal;
   operationState.livenessBusy = true;
   operationState.livenessIds = new Set(ids);
@@ -1044,7 +1059,7 @@ $("clearDisabledAccounts").onclick = async () => {
   }
 };
 $("deleteSelected").onclick = async () => {
-  const ids = [...selectedAccounts];
+  const ids = selectedAccountIds();
   if (!ids.length || !window.confirm(`确定删除选中的 ${ids.length} 个账号吗？相关 Token、额度和授权任务也会删除。`)) return;
   try {
     const result = await api("/api/accounts", {method: "DELETE", body: JSON.stringify({ids})});
@@ -1056,7 +1071,7 @@ $("deleteSelected").onclick = async () => {
 
 async function downloadAccounts() {
   const format = String($("exportFormat")?.value || "cpa");
-  const ids = [...selectedAccounts];
+  const ids = selectedAccountIds();
   const query = new URLSearchParams({format});
   const response = await fetch(`/api/accounts/export?${query}`, {
     method: "POST",
@@ -1076,9 +1091,17 @@ async function downloadAccounts() {
 }
 
 async function uploadAccounts(path, label) {
-  const ids = [...selectedAccounts];
+  const ids = selectedAccountIds();
   const body = ids.length ? {ids} : {};
   const result = await api(path, {method: "POST", body: JSON.stringify(body)});
+  if (Number(result.requested || 0) === 0 || Number(result.unauthorized || 0) > 0) {
+    const message = ids.length
+      ? `${label}完成：成功 ${result.uploaded || 0}，失败 ${result.failed || 0}${result.unauthorized ? `，未授权 ${result.unauthorized} 个` : ""}`
+      : `${label}未执行：没有已保存 OAuth Token，请先完成重新授权`;
+    setAccountResult("exportResult", message);
+    await refreshData({showError: false});
+    return;
+  }
   const skipped = Number(result.skipped || 0);
   const skipText = skipped ? `，跳过已上传 ${skipped}` : "";
   const summary = `${label}完成：成功 ${result.uploaded || 0}，失败 ${result.failed || 0}${skipText}`;

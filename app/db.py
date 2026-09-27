@@ -733,28 +733,41 @@ class Repository:
             raise ValueError("不支持的上传平台")
         result_items = result.get("items", []) if isinstance(result, Mapping) else []
         by_email: dict[str, Mapping[str, Any]] = {}
+        by_account_id: dict[str, Mapping[str, Any]] = {}
         if isinstance(result_items, list):
             for item in result_items:
                 if not isinstance(item, Mapping):
                     continue
-                email = str(item.get("email") or "").strip().lower()
+                item_id = str(item.get("id") or item.get("account_id") or "").strip()
+                if item_id:
+                    by_account_id[item_id] = item
+                email = str(item.get("email") or item.get("name") or "").strip().lower()
                 if email:
                     by_email[email] = item
         now = utc_now()
         fallback_error = str(error or "").replace("\r", " ").replace("\n", " ")[:300]
+        uploaded_count = 0
+        failed_count = 0
+        if isinstance(result, Mapping):
+            try:
+                uploaded_count = max(0, int(result.get("uploaded") or 0))
+                failed_count = max(0, int(result.get("failed") or 0))
+            except (TypeError, ValueError, OverflowError):
+                uploaded_count = failed_count = 0
+        count_only_success = not result_items and uploaded_count == len(records) and failed_count == 0
         with self.db.connect() as connection:
             for record in records:
                 account_id = str(record.get("id") or "").strip()
                 email = str(record.get("email") or "").strip().lower()
                 if not account_id:
                     continue
-                item = by_email.get(email)
+                item = by_account_id.get(account_id) or by_email.get(email)
                 # A skipped row means the local success record is still valid;
                 # do not turn it into a failure merely because it was filtered
                 # out before the remote request.
                 if item is not None and bool(item.get("skipped")):
                     continue
-                uploaded = bool(item.get("uploaded")) if item is not None else False
+                uploaded = bool(item.get("uploaded")) if item is not None else count_only_success
                 item_error = str(item.get("error") or "")[:300] if item is not None else fallback_error
                 status = "success" if uploaded else "failed"
                 uploaded_at = now if uploaded else None
@@ -1016,6 +1029,29 @@ class Repository:
                 marks = ",".join("?" for _ in ids)
                 rows = connection.execute(f"SELECT t.*, a.email AS account_email FROM tokens t JOIN accounts a ON a.id=t.account_id WHERE t.account_id IN ({marks}) ORDER BY t.email", ids).fetchall()
         return [dict(row) for row in rows]
+
+    def count_accounts_without_tokens(self, account_ids: Sequence[str]) -> int:
+        """Count selected existing accounts that have no saved OAuth token."""
+
+        normalized = list(dict.fromkeys(
+            str(value or "").strip()
+            for value in account_ids
+            if str(value or "").strip()
+        ))
+        if not normalized:
+            return 0
+        marks = ",".join("?" for _ in normalized)
+        with self.db.connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT COUNT(*)
+                  FROM accounts AS a
+                 WHERE a.id IN ({marks})
+                   AND NOT EXISTS (SELECT 1 FROM tokens AS t WHERE t.account_id=a.id)
+                """,
+                normalized,
+            ).fetchone()
+        return int(row[0] or 0)
 
     def export_account_records(self, account_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
         """Return complete authorized records only for an explicit export.

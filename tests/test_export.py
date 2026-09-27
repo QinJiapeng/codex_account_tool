@@ -825,6 +825,8 @@ def test_authorization_workbench_contains_import_dialog_and_no_separate_account_
     assert 'class="card account-list-card"' in html
     assert 'class="table-wrap account-table-wrap"' in html
     assert 'class="account-table"' in html
+    assert "function selectedAccountIds" in script
+    assert "const ids = selectedAccountIds();" in script
     assert "2FA 状态" in html
     assert '<td colspan="8">' in html
     assert "function totpStatusDisplay" in script
