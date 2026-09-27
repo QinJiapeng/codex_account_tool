@@ -604,6 +604,12 @@ function renderAccountTable() {
 
 function renderAccounts(accounts, quotas, jobs, proxies, quotaProgress = {}) {
   accountListItems = Array.isArray(accounts.items) ? accounts.items : [];
+  // Selection is scoped to the currently displayed page. Drop IDs that are
+  // no longer visible after paging, searching, filtering, or a data refresh.
+  const visibleAccountIds = new Set(accountListItems.map((account) => String(account.id || "")));
+  for (const selectedId of selectedAccounts) {
+    if (!visibleAccountIds.has(selectedId)) selectedAccounts.delete(selectedId);
+  }
   accountPagination.page = Math.max(1, Number(accounts.page || accountPagination.page));
   accountPagination.pageSize = Math.max(1, Number(accounts.page_size || accounts.limit || accountPagination.pageSize));
   accountPagination.total = Math.max(0, Number(accounts.total || 0));
