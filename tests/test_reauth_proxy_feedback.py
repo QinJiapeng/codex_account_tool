@@ -55,6 +55,21 @@ class FakeProxyPool:
         self.completed.append((success, error))
 
 
+class WaitingProxyPool(FakeProxyPool):
+    def __init__(self) -> None:
+        super().__init__()
+        self.claims = 0
+
+    def claim(self, owner: str) -> ProxyLease:
+        self.claims += 1
+        if self.claims == 1:
+            raise ProxyPoolError("代理池当前没有可用代理", "PROXY_POOL_EMPTY")
+        return ProxyLease(7, "socks5://proxy-user:proxy-password@proxy.example:1080", owner)
+
+    def stats(self) -> dict[str, int]:
+        return {"total": 1, "enabled": 1, "available": 1 if self.claims > 1 else 0}
+
+
 class FakeReauthService(ReauthService):
     def _reauthorize_sync(self, account: dict[str, object], proxy_url: str, job_id: str) -> dict[str, str]:
         assert proxy_url == "socks5://proxy-user:proxy-password@proxy.example:1080"
@@ -146,6 +161,25 @@ async def test_reauth_job_exposes_only_the_proxy_endpoint_after_claim(tmp_path: 
     assert "proxy-user" not in events
     assert "proxy-password" not in events
     assert proxy_pool.completed == [(True, "")]
+
+
+@pytest.mark.asyncio
+async def test_reauth_waits_for_a_busy_configured_proxy(tmp_path: Path):
+    repository = Repository(Database(tmp_path / "tool.db"))
+    repository.db.initialize()
+    account = _account(repository)
+    proxy_pool = WaitingProxyPool()
+    service = FakeReauthService(repository, _settings(tmp_path), proxy_pool)  # type: ignore[arg-type]
+    service.PROXY_WAIT_POLL_SECONDS = 0
+    job = repository.create_job(str(account["id"]), True)
+    try:
+        await service._run(str(job["id"]), 0)
+    finally:
+        await service.stop()
+
+    stored = repository.get_job(str(job["id"]))
+    assert stored and stored["status"] == "success"
+    assert proxy_pool.claims == 2
 
 
 @pytest.mark.asyncio

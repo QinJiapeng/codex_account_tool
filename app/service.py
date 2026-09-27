@@ -972,6 +972,11 @@ class ReauthMailProvider:
 
 
 class ReauthService:
+    # A proxy lease is held for the whole login/OTP session.  When all
+    # configured proxies are busy, waiting here avoids burning through the
+    # transient retry budget and incorrectly failing queued accounts.
+    PROXY_WAIT_POLL_SECONDS = 1.0
+
     def __init__(self, repository: Repository, settings: Settings, proxy_pool: ProxyPool):
         self.repository = repository
         self.settings = settings
@@ -979,6 +984,7 @@ class ReauthService:
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self._queued: set[str] = set()
         self._tasks: list[asyncio.Task[None]] = []
+        self._upload_tasks: set[asyncio.Task[None]] = set()
         self._executor = ThreadPoolExecutor(max_workers=settings.worker_count, thread_name_prefix="reauth")
         self._stopping = False
 
@@ -1001,6 +1007,8 @@ class ReauthService:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        if self._upload_tasks:
+            await asyncio.gather(*self._upload_tasks, return_exceptions=True)
         self._executor.shutdown(wait=False, cancel_futures=False)
 
     async def submit(self, job_id: str) -> None:
@@ -1234,7 +1242,7 @@ class ReauthService:
             if use_proxy:
                 self.repository.add_event(job_id, "info", "正在从代理池领取代理")
                 owner_prefix = "totp-setup" if operation == "totp_setup" else "reauth"
-                lease = self.proxy_pool.claim(f"{owner_prefix}:{job_id}:{worker_index}")
+                lease = await self._claim_proxy(f"{owner_prefix}:{job_id}:{worker_index}")
                 proxy_endpoint = redact_proxy(lease.url)
                 self.repository.update_job(job_id, current_step="login", proxy_state="claimed", proxy_endpoint=proxy_endpoint)
                 self.repository.add_event(job_id, "info", f"已领取代理 {proxy_endpoint}，开始建立登录会话")
@@ -1243,6 +1251,11 @@ class ReauthService:
             loop = asyncio.get_running_loop()
             if operation == "totp_setup":
                 result = await loop.run_in_executor(self._executor, self._setup_totp_sync, account, lease.url if lease else "", job_id)
+                if lease:
+                    # The upstream login is complete.  Do not keep the proxy
+                    # leased while local persistence and optional uploads run.
+                    self.proxy_pool.complete(lease, success=True)
+                    lease = None
                 self.repository.update_job(job_id, current_step="save_totp")
                 if result.get("already_enabled"):
                     self.repository.add_event(job_id, "info", "账号已经开通 2FA，无需重复设置")
@@ -1252,9 +1265,14 @@ class ReauthService:
                 self.repository.update_account(account["id"], status="success", error="")
             else:
                 result = await loop.run_in_executor(self._executor, self._reauthorize_sync, account, lease.url if lease else "", job_id)
+                if lease:
+                    # Uploads are independent of the login session and may be
+                    # slow; release the proxy before waiting for them.
+                    self.proxy_pool.complete(lease, success=True)
+                    lease = None
                 self.repository.update_job(job_id, current_step="save_token")
                 self.repository.save_token(account["id"], result)
-                await self._auto_upload(account["id"], job_id)
+                self._schedule_auto_upload(str(account["id"]), job_id)
             self.repository.update_job(job_id, status="success", current_step="finished", error="", finished_at=utc_now())
             self.repository.add_event(job_id, "info", "2FA 开通成功" if operation == "totp_setup" else "重新授权成功，Token 已保存")
             success = True
@@ -1269,6 +1287,28 @@ class ReauthService:
             if lease:
                 with contextlib.suppress(Exception):
                     self.proxy_pool.complete(lease, success=success, error=error_message)
+
+    async def _claim_proxy(self, owner: str) -> ProxyLease:
+        """Wait for a configured proxy to become available without using a thread."""
+
+        while not self._stopping:
+            try:
+                return self.proxy_pool.claim(owner)
+            except ProxyPoolError as error:
+                if error.code not in {"PROXY_POOL_EMPTY", "PROXY_POOL_BUSY"}:
+                    raise
+                stats_fn = getattr(self.proxy_pool, "stats", None)
+                if not callable(stats_fn):
+                    raise
+                try:
+                    stats = stats_fn()
+                    enabled = int(stats.get("enabled") or 0)
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    raise error
+                if enabled <= 0:
+                    raise
+                await asyncio.sleep(self.PROXY_WAIT_POLL_SECONDS)
+        raise asyncio.CancelledError()
 
     async def _auto_upload(self, account_id: str, job_id: str) -> None:
         """Optionally forward a newly authorized account without failing auth."""
@@ -1330,6 +1370,24 @@ class ReauthService:
                 with contextlib.suppress(Exception):
                     self.repository.save_upload_statuses("sub2api", records, {"items": skipped}, error=safe_error(error))
                 self.repository.add_event(job_id, "warning", f"授权成功，自动上传 Sub2API 失败：{safe_error(error)}")
+
+    def _schedule_auto_upload(self, account_id: str, job_id: str) -> None:
+        """Run optional uploads without occupying an authorization worker."""
+
+        if not (self.settings.auto_upload_cpa or self.settings.auto_upload_sub2api):
+            return
+
+        async def run_upload() -> None:
+            try:
+                await self._auto_upload(account_id, job_id)
+            except Exception as error:
+                # _auto_upload handles remote failures itself; this guard also
+                # covers unexpected local/export errors without losing the job.
+                self.repository.add_event(job_id, "warning", f"授权成功，自动上传失败：{safe_error(error)}")
+
+        task = asyncio.create_task(run_upload(), name=f"reauth-upload-{job_id}")
+        self._upload_tasks.add(task)
+        task.add_done_callback(self._upload_tasks.discard)
 
     def _reauthorize_sync(self, account: dict[str, Any], proxy_url: str, job_id: str) -> dict[str, Any]:
         self.repository.add_event(job_id, "info", "正在执行协议登录")
